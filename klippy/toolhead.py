@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging, importlib
 import mcu, chelper, kinematics.extruder
+import subprocess,util #flsun add, Add a child thread
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
 #   mm/second), _v2 is velocity squared (mm^2/s^2), _t is time (in
@@ -262,18 +263,85 @@ class ToolHead:
             msg = "Error loading kinematics '%s'" % (kin_name,)
             logging.exception(msg)
             raise config.error(msg)
+        self.struct_light_func = False
         # Register commands
         gcode.register_command('G4', self.cmd_G4)
+        gcode.register_command('M108', self.cmd_M108) #flsun add,excute while power loss
+        gcode.register_command('M100', self.cmd_M100) #flsun add,excute shell command
+        gcode.register_command('M101', self.cmd_M101) #flsun add,excute flow,size,warp
         gcode.register_command('M400', self.cmd_M400)
         gcode.register_command('SET_VELOCITY_LIMIT',
                                self.cmd_SET_VELOCITY_LIMIT,
                                desc=self.cmd_SET_VELOCITY_LIMIT_help)
         gcode.register_command('M204', self.cmd_M204)
+        gcode.register_command('M205', self.cmd_M205)#flsun add ,add M205 X to modify jerk
         # Load some default modules
         modules = ["gcode_move", "homing", "idle_timeout", "statistics",
                    "manual_probe", "tuning_tower"]
         for module_name in modules:
             self.printer.load_object(config, module_name)
+    def cmd_M108(self, gcmd): #flsun add, shutdown
+        self.printer.my_shutdown("my shutdwon")
+    def cmd_M100(self, gcmd): #flsun add, shell command
+        sh = gcmd.get_float('S', None, above=0.)
+        if sh == 1.0:
+            pass
+            #subprocess.Popen(["bash", "/home/pi/flsun_func/Structured_light/move_cali.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) #flsun add
+        elif sh == 2.0 and self.struct_light_func:
+            pass
+            #subprocess.Popen(["bash", "/home/pi/flsun_func/Structured_light/move_line.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) #flsun add
+        elif sh == 3.0 and self.struct_light_func:
+            pass
+            #subprocess.Popen(["bash", "/home/pi/flsun_func/Structured_light/move_model.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) #flsun add
+        elif sh == 4.0 and self.struct_light_func:
+            pass
+            #subprocess.Popen(["bash", "/home/pi/flsun_func/Structured_light/move_cube.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) #flsun add
+        elif sh == 100.0:
+            pass
+            #subprocess.Popen(["bash", "/home/pi/flsun_func/Structured_light/structured_light_video_test.sh"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) #flsun add
+    def cmd_M101(self, gcmd): #flsun add, 
+        flow = gcmd.get_float('F', None, above=0.)
+        size = gcmd.get_float('S', None, above=0.)
+        warp = gcmd.get_float('W', None, above=-1.0)
+        x_real_size = gcmd.get_float('X', None, above=0.)
+        y_real_size = gcmd.get_float('Y', None, above=0.)
+        target_size = gcmd.get_float('T', None, above=0.)
+        gcode = self.printer.lookup_object('gcode')
+        if flow is not None:
+            gcode.run_script_from_command('M117 flow = %f' % (flow))
+        if size is not None:
+            size = size + 0.1
+            gcode.run_script_from_command('M117 size = %f' % (size))
+            if size >= 19.3 and size <=20.7:
+                gcode_move = self.printer.lookup_object('gcode_move')#test
+                last_x_size_offset, last_y_size_offset = gcode_move.get_xy_size_offset()
+                configfile = self.printer.lookup_object('configfile')#test
+                new_y_size_offset = ((20-size)/20 + 1)*(1+last_y_size_offset) - 1
+                new_y_size_offset = min(new_y_size_offset, 0.034)
+                new_y_size_offset = max(new_y_size_offset, -0.034)
+                configfile.set('printer', 'y_size_offset', "%.6f" % (new_y_size_offset))
+                gcode.run_script_from_command('save_config')
+        if warp is not None:
+            if warp == 1.0:
+                gcode.run_script_from_command('M117 warp occur')
+            elif warp == 0.0:
+                gcode.run_script_from_command('M117 warp is normal')
+        if target_size is not None:
+            gcode_move = self.printer.lookup_object('gcode_move')#test
+            last_x_size_offset, last_y_size_offset = gcode_move.get_xy_size_offset()
+            configfile = self.printer.lookup_object('configfile')#test
+            if x_real_size is not None:
+                new_x_size_offset = ((target_size-x_real_size)/target_size + 1)*(1+last_x_size_offset) - 1
+                new_x_size_offset = min(new_x_size_offset, 0.034)
+                new_x_size_offset = max(new_x_size_offset, -0.034)
+                configfile.set('printer', 'x_size_offset', "%.6f" % (new_x_size_offset))
+            if y_real_size is not None:
+                new_y_size_offset = ((target_size-y_real_size)/target_size + 1)*(1+last_y_size_offset) - 1
+                new_y_size_offset = min(new_y_size_offset, 0.034)
+                new_y_size_offset = max(new_y_size_offset, -0.034)
+                configfile.set('printer', 'y_size_offset', "%.6f" % (new_y_size_offset))
+            gcode.run_script_from_command('save_config')
+
     # Print time tracking
     def _update_move_time(self, next_print_time):
         batch_time = MOVE_BATCH_TIME
@@ -368,6 +436,10 @@ class ToolHead:
             self.reactor.update_timer(self.flush_timer, eventtime + 0.100)
         # Check if there are lots of queued moves and stall if so
         while 1:
+            if self.printer.power_loss_occur:
+                logging.info("power loss occur,return from check_stall")
+                self.need_check_stall = self.reactor.NEVER
+                return
             est_print_time = self.mcu.estimated_print_time(eventtime)
             buffer_time = self.print_time - est_print_time
             stall_time = buffer_time - self.buffer_time_high
@@ -408,6 +480,13 @@ class ToolHead:
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
     def move(self, newpos, speed):
+        # if power loss occur,stop to add move
+        if self.printer.power_loss_occur:
+            print_stat = self.printer.lookup_object("print_stats")
+            if print_stat.state == 'printing':
+                self.move_queue.reset()
+                self.trapq_finalize_moves(self.trapq, self.reactor.NEVER)
+                raise self.printer.command_error("power loss occur,stop to add other moves")
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
@@ -574,7 +653,7 @@ class ToolHead:
                    self.max_velocity, self.max_accel,
                    self.requested_accel_to_decel,
                    self.square_corner_velocity))
-        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
+        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,),log=False)
         if (max_velocity is None and
             max_accel is None and
             square_corner_velocity is None and
@@ -593,6 +672,10 @@ class ToolHead:
                 return
             accel = min(p, t)
         self.max_accel = accel
+        #self.requested_accel_to_decel = self.max_accel * 0.5  #flsun test
+        self._calc_junction_deviation()
+    def cmd_M205(self, gcmd): #flsun add ,add M205 X to modify jerk
+        self.square_corner_velocity = gcmd.get_float('X', None, above=0.)
         self._calc_junction_deviation()
 
 def add_printer_objects(config):

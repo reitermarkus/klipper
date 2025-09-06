@@ -13,6 +13,7 @@ class DeltaKinematics:
     def __init__(self, toolhead, config):
         # Setup tower rails
         stepper_configs = [config.getsection('stepper_' + a) for a in 'abc']
+        self.printer = config.get_printer()#flsun add
         rail_a = stepper.LookupMultiRail(
             stepper_configs[0], need_position_minmax = False)
         a_endstop = rail_a.get_homing_info().position_endstop
@@ -35,6 +36,10 @@ class DeltaKinematics:
         # Read radius and arm lengths
         self.radius = radius = config.getfloat('delta_radius', above=0.)
         print_radius = config.getfloat('print_radius', radius, above=0.)
+        gcode_move = self.printer.lookup_object('gcode_move')#test
+        x_size_offset, y_size_offset = gcode_move.get_xy_size_offset()
+        if x_size_offset > 0 or y_size_offset > 0:
+            print_radius = print_radius*(1 + max(x_size_offset, y_size_offset))
         arm_length_a = stepper_configs[0].getfloat('arm_length', above=radius)
         self.arm_lengths = arm_lengths = [
             sconfig.getfloat('arm_length', arm_length_a, above=radius)
@@ -89,6 +94,24 @@ class DeltaKinematics:
         self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, 0.)
         self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, 0.)
         self.set_position([0., 0., 0.], ())
+
+        
+        gcode = self.printer.lookup_object('gcode')#flsun add
+        gcode.register_command('M665', self.cmd_M665)#flsun add
+    def cmd_M665(self, gcmd): #flsun add,M665 to modify arm length
+        # Use A,B,C
+        configfile = self.printer.lookup_object('configfile')#test
+        params = gcmd.get_command_parameters()
+        #if 'A' in params:
+        #    self.arm_lengths[0] += float(params['A'])
+        #if 'B' in params:
+        #    self.arm_lengths[1] += float(params['B'])
+        #if 'C' in params:
+        #    self.arm_lengths[2] += float(params['C'])
+        #configfile.set('stepper_a', 'arm_length', "%.6f" % (self.arm_lengths[0]))
+        #configfile.set('stepper_b', 'arm_length', "%.6f" % (self.arm_lengths[1]))
+        #configfile.set('stepper_c', 'arm_length', "%.6f" % (self.arm_lengths[2]))
+
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
     def _actuator_to_cartesian(self, spos):
@@ -122,12 +145,20 @@ class DeltaKinematics:
             raise move.move_error("Must home first")
         end_z = end_pos[2]
         limit_xy2 = self.max_xy2
-        if end_z > self.limit_z:
-            limit_xy2 = min(limit_xy2, (self.max_z - end_z)**2)
+        #if end_z > self.limit_z:
+        #    limit_xy2 = min(limit_xy2, (self.max_z - end_z)**2)
         if end_xy2 > limit_xy2 or end_z > self.max_z or end_z < self.min_z:
             # Move out of range - verify not a homing move
             if (end_pos[:2] != self.home_position[:2]
                 or end_z < self.min_z or end_z > self.home_position[2]):
+                raise move.move_error()
+            limit_xy2 = -1.
+        if end_z > self.limit_z:
+            ha = math.sqrt(self.arm2[0] - (end_pos[0] - self.towers[0][0])**2 - (end_pos[1] - self.towers[0][1])**2) + end_pos[2]
+            hb = math.sqrt(self.arm2[1] - (end_pos[0] - self.towers[1][0])**2 - (end_pos[1] - self.towers[1][1])**2) + end_pos[2]
+            hc = math.sqrt(self.arm2[2] - (end_pos[0] - self.towers[2][0])**2 - (end_pos[1] - self.towers[2][1])**2) + end_pos[2]    
+            if ha > (self.abs_endstops[0] + 0.01) or hb > (self.abs_endstops[1] +0.01) or hc > (self.abs_endstops[2] +0.01):
+                logging.warning("ha is %f, hb is %f, hc is %f ,abs_endstop is %s", ha, hb, hc, str(self.abs_endstops))
                 raise move.move_error()
             limit_xy2 = -1.
         if move.axes_d[2]:
@@ -213,9 +244,9 @@ class DeltaCalibration:
                                       self.abs_endstops, steppos)]
     def save_state(self, configfile):
         # Save the current parameters (for use with SAVE_CONFIG)
-        configfile.set('printer', 'delta_radius', "%.6f" % (self.radius,))
+        configfile.set('printer', 'delta_radius', "%.6f" % (self.radius,))#flsun delete,don't calibrate raduis
         for i, axis in enumerate('abc'):
-            configfile.set('stepper_'+axis, 'angle', "%.6f" % (self.angles[i],))
+            configfile.set('stepper_'+axis, 'angle', "%.6f" % (self.angles[i],))#flsun delete,don't calibrate angle
             configfile.set('stepper_'+axis, 'arm_length',
                            "%.6f" % (self.arms[i],))
             configfile.set('stepper_'+axis, 'position_endstop',

@@ -14,6 +14,8 @@ class Fan:
         self.last_fan_time = 0.
         # Read config
         self.max_power = config.getfloat('max_power', 1., above=0., maxval=1.)
+        self.max_power_backup = self.max_power
+        self.max_power_factor = -1 # -1 means not using, 0-100 means has be set
         self.kick_start_time = config.getfloat('kick_start_time', 0.1,
                                                minval=0.)
         self.off_below = config.getfloat('off_below', default=0.,
@@ -25,6 +27,7 @@ class Fan:
         # Setup pwm object
         ppins = self.printer.lookup_object('pins')
         self.mcu_fan = ppins.setup_pin('pwm', config.get('pin'))
+        self.mcu_fan._invert = config.getboolean('invert', False) #dingzeqi
         self.mcu_fan.setup_max_duration(0.)
         self.mcu_fan.setup_cycle_time(cycle_time, hardware_pwm)
         shutdown_power = max(0., min(self.max_power, shutdown_speed))
@@ -66,6 +69,8 @@ class Fan:
         return {
             'speed': self.last_fan_value,
             'rpm': tachometer_status['rpm'],
+            'max_power': self.max_power_backup,
+            'max_power_factor':self.max_power_factor
         }
 
 class FanTachometer:
@@ -93,9 +98,12 @@ class PrinterFan:
     def __init__(self, config):
         self.fan = Fan(config)
         # Register commands
-        gcode = config.get_printer().lookup_object('gcode')
-        gcode.register_command("M106", self.cmd_M106)
-        gcode.register_command("M107", self.cmd_M107)
+        self.gcode = config.get_printer().lookup_object('gcode')
+        self.gcode.register_command("M106", self.cmd_M106)
+        self.gcode.register_command("M107", self.cmd_M107)
+        #dingzeqi
+        self.gcode.register_command("M116", self.cmd_M116)
+        self.gcode.register_command("F105", self.cmd_F105)
     def get_status(self, eventtime):
         return self.fan.get_status(eventtime)
     def cmd_M106(self, gcmd):
@@ -105,6 +113,39 @@ class PrinterFan:
     def cmd_M107(self, gcmd):
         # Turn fan off
         self.fan.set_speed_from_command(0.)
+    #dingzeqi
+    def cmd_M116(self, gcmd):
+        get_factor = gcmd.get_float('S', 100., minval=0.)
+        speed_factor = get_factor * self.fan.max_power_backup / 100
+        if speed_factor < 0 or speed_factor > self.fan.max_power_backup:
+            return
+        else:
+            eventtime = self.fan.printer.get_reactor().monotonic()
+            # get curret speed_power, and Calculate the ratio of the current value to the maximum value
+            temp_eventtime_speed = self.get_status(eventtime)['speed']
+            if self.fan.max_power == 0 or \
+                (temp_eventtime_speed == 0. and \
+                 self.fan.max_power == self.fan.max_power_backup):
+                speed_value = self.fan.max_power_backup
+                speed_ratio = 1.0
+            else:
+                speed_ratio = temp_eventtime_speed  / self.fan.max_power
+            self.fan.max_power = speed_factor
+            self.fan.max_power_factor = get_factor
+            # reset the ratio by new max_power
+            #self.fan.set_speed_from_command(speed_value)
+            self.gcode.run_script_from_command("M106 S%f"%(speed_ratio*255))
+    # set max_power,and no impact current speed power -- by lixm
+    def cmd_F105(self, gcmd):
+        get_factor = gcmd.get_float('S', 100., minval=-1.)
+        if get_factor < 0.:
+            return
+        speed_factor = get_factor * self.fan.max_power_backup / 100
+        if speed_factor < 0 or speed_factor > self.fan.max_power_backup:
+            return
+        else:
+            self.fan.max_power = speed_factor
+            self.fan.max_power_factor = get_factor
 
 def load_config(config):
     return PrinterFan(config)

@@ -4,7 +4,7 @@
 # Copyright (C) 2018-2019 Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math, json, collections
+import logging, math, json, collections, chelper
 from . import probe
 
 PROFILE_VERSION = 1
@@ -97,6 +97,8 @@ class BedMesh:
         self.horizontal_move_z = config.getfloat('horizontal_move_z', 5.)
         self.fade_start = config.getfloat('fade_start', 1.)
         self.fade_end = config.getfloat('fade_end', 0.)
+        self.delta_split_offset = config.getfloat('delta_split_offset', 0.05,
+                                          minval=0., maxval=.06)
         self.fade_dist = self.fade_end - self.fade_start
         if self.fade_dist <= 0.:
             self.fade_start = self.fade_end = self.FADE_DISABLE
@@ -108,6 +110,7 @@ class BedMesh:
         # setup persistent storage
         self.pmgr = ProfileManager(config, self)
         self.save_profile = self.pmgr.save_profile
+        self.ffi_main, self.ffi_lib = chelper.get_ffi()
         # register gcodes
         self.gcode.register_command(
             'BED_MESH_OUTPUT', self.cmd_BED_MESH_OUTPUT,
@@ -206,15 +209,41 @@ class BedMesh:
                     % (z, self.fade_target))
             self.toolhead.move([x, y, z + self.fade_target, e], speed)
         else:
+            long_move = False
+            move_distance = math.sqrt((newpos[0] - self.last_position[0])**2 + (newpos[1] - self.last_position[1])**2)
+            if move_distance > 10:
+                long_move = True
             self.splitter.build_move(self.last_position, newpos, factor)
             while not self.splitter.traverse_complete:
                 split_move = self.splitter.split()
+                if long_move:
+                    split_offset = self.ffi_lib.get_offset(0.0, 0.0, self.last_position[0], self.last_position[1], newpos[0], newpos[1], split_move[0], split_move[1], self.delta_split_offset, move_distance)
+                    split_offset = split_offset * factor
+                    #logging.info("split_offset is %s", str(split_offset))
+                    split_move = list(split_move)
+                    split_move[2] -= split_offset
+                    split_move = tuple(split_move)
                 if split_move:
                     self.toolhead.move(split_move, speed)
                 else:
                     raise self.gcode.error(
                         "Mesh Leveling: Error splitting move ")
         self.last_position[:] = newpos
+    def get_point_line_distance(self, point, line_s, line_e):
+        point_x = point[0]
+        point_y = point[1]
+        line_s_x = line_s[0]
+        line_s_y = line_s[1]
+        line_e_x = line_e[0]
+        line_e_y = line_e[1]
+        if line_e_x - line_s_x == 0:
+            return math.fabs(point_x - line_s_x)
+        if line_e_y - line_s_y == 0:
+            return math.fabs(point_y - line_s_y)
+        k = (line_e_y - line_s_y) / (line_e_x - line_s_x)
+        b = line_s_y - k * line_s_x
+        dis = math.fabs(k * point_x - point_y + b) / math.pow(k * k + 1, 0.5)
+        return dis
     def get_status(self, eventtime=None):
         status = {
             "profile_name": "",
@@ -284,6 +313,8 @@ class BedMeshCalibrate:
         self.mesh_min = self.mesh_max = (0., 0.)
         self.relative_reference_index = config.getint(
             'relative_reference_index', None)
+        self.delta_split_offset = config.getfloat('delta_split_offset', 0.05,
+                                          minval=0., maxval=.06)
         self.faulty_regions = []
         self.substituted_indices = collections.OrderedDict()
         self.orig_config['rri'] = self.relative_reference_index
@@ -301,6 +332,7 @@ class BedMeshCalibrate:
         self.gcode.register_command(
             'BED_MESH_CALIBRATE', self.cmd_BED_MESH_CALIBRATE,
             desc=self.cmd_BED_MESH_CALIBRATE_help)
+        self.ffi_main, self.ffi_lib = chelper.get_ffi()
     def _generate_points(self, error):
         x_cnt = self.mesh_config['x_count']
         y_cnt = self.mesh_config['y_count']
@@ -339,9 +371,33 @@ class BedMeshCalibrate:
                 else:
                     # round bed, check distance from origin
                     dist_from_origin = math.sqrt(pos_x*pos_x + pos_y*pos_y)
+                    #flsun modify,Add some points to the edge of the circle
+                    boder_x = math.sqrt(self.radius*self.radius - pos_y*pos_y) 
+                    boder_y = math.sqrt(self.radius*self.radius - pos_x*pos_x) 
                     if dist_from_origin <= self.radius:
                         points.append(
                             (self.origin[0] + pos_x, self.origin[1] + pos_y))
+                        continue
+                    #If 10mm outside the edge point is still inside the circle, add this point
+                    if pos_x < -boder_x and x_dist + pos_x + boder_x > 10: #flsun add
+                        points.append(
+                            (self.origin[0] + (-boder_x), self.origin[1] + pos_y))
+                        continue
+                    if pos_x > boder_x and x_dist + boder_x - pos_x > 10: #flsun add
+                        points.append(
+                            (self.origin[0] + (boder_x), self.origin[1] + pos_y))
+                        continue
+                    #The first and last row, turned into an arc, to increase the number of points
+                    if i == 0:
+                        if dist_from_origin > self.radius and pos_x*pos_x + (pos_y+y_dist)*(pos_y+y_dist) <= self.radius*self.radius and -boder_y < (pos_y + y_dist - 0.1):                      
+                            points.append(
+                            (self.origin[0] + pos_x, self.origin[1] + (-boder_y)))
+                            continue
+                    if i == y_cnt-1:
+                        if dist_from_origin > self.radius and pos_x*pos_x + (pos_y-y_dist)*(pos_y-y_dist) <= self.radius*self.radius and boder_y > (pos_y - y_dist + 0.1):
+                            points.append(
+                            (self.origin[0] + pos_x, self.origin[1] + (boder_y)))
+                            continue
             pos_y += y_dist
         self.points = points
         if not self.faulty_regions:
@@ -662,6 +718,14 @@ class BedMeshCalibrate:
         probed_matrix = []
         row = []
         prev_pos = positions[0]
+        #flsun add,Since the first row and the last row are arcs, the Y values are not equal, and they need to be equal here
+        if self.radius is not None: 
+            for pos in positions:
+                if pos[1] >= -self.radius - 0.1 and pos[1] < -self.radius + 2*self.radius/(y_cnt-1) - 0.1:
+                    pos[1] = -self.radius
+                if pos[1] <= self.radius + 0.1 and pos[1] > self.radius - 2*self.radius/(y_cnt-1) + 0.1:
+                    pos[1] = self.radius
+
         for pos in positions:
             if not isclose(pos[1], prev_pos[1], abs_tol=.1):
                 # y has changed, append row and start new
@@ -709,7 +773,13 @@ class BedMeshCalibrate:
                     ("bed_mesh: invalid x-axis table length\n"
                         "Probed table length: %d Probed Table:\n%s") %
                     (len(probed_matrix), str(probed_matrix)))
-
+        #logging.info("probed_matrix is %s", str(probed_matrix)) #test
+        probed_offset = self.delta_split_offset
+        if len(probed_matrix) == 7:
+            for i in range(7):
+                for j in range(7):
+                    probed_matrix[i][j] += self.ffi_lib.adjust_matrix(i, j, self.delta_split_offset)
+        #logging.info("probed_matrix is %s", str(probed_matrix)) #test
         z_mesh = ZMesh(params)
         try:
             z_mesh.build_mesh(probed_matrix)
@@ -741,7 +811,7 @@ class BedMeshCalibrate:
 class MoveSplitter:
     def __init__(self, config, gcode):
         self.split_delta_z = config.getfloat(
-            'split_delta_z', .025, minval=0.01)
+            'split_delta_z', .001, minval=0.0001)
         self.move_check_distance = config.getfloat(
             'move_check_distance', 5., minval=3.)
         self.z_mesh = None

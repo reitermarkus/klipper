@@ -149,10 +149,19 @@ class PrinterConfig:
     def get_printer(self):
         return self.printer
     def _read_config_file(self, filename):
+        retries = 3
         try:
-            f = open(filename, 'r')
-            data = f.read()
-            f.close()
+            while retries:
+                retries -= 1
+                f = open(filename, 'r')
+                data = f.read()
+                f.close()
+                if len(data.strip()) > 0:
+                    break
+                time.sleep(0.5)
+                logging.info("config file is empty,to retry")
+            if retries == 0:
+                raise error("config file is empty")
         except:
             msg = "Unable to open config file %s" % (filename,)
             logging.exception(msg)

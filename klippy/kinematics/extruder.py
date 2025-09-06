@@ -1,5 +1,5 @@
 # Code for handling printer nozzle extruders
-#
+#20240227
 # Copyright (C) 2016-2022  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
@@ -11,6 +11,7 @@ class ExtruderStepper:
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.pressure_advance = self.pressure_advance_smooth_time = 0.
+        self.pressure_choice = 'on' # flsun change
         # Setup stepper
         self.stepper = stepper.PrinterStepper(config)
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -61,7 +62,7 @@ class ExtruderStepper:
                                              % (extruder_name,))
         self.stepper.set_position([extruder.last_position, 0., 0.])
         self.stepper.set_trapq(extruder.get_trapq())
-    def _set_pressure_advance(self, pressure_advance, smooth_time):
+    def _set_pressure_advance(self, pressure_advance, smooth_time,pressure_choice): # flsun change
         old_smooth_time = self.pressure_advance_smooth_time
         if not self.pressure_advance:
             old_smooth_time = 0.
@@ -73,9 +74,14 @@ class ExtruderStepper:
                                                 old_delay=old_smooth_time * .5)
         ffi_main, ffi_lib = chelper.get_ffi()
         espa = ffi_lib.extruder_set_pressure_advance
-        espa(self.sk_extruder, pressure_advance, new_smooth_time)
+        if pressure_choice == 'on': # flsun change
+            pressure_value = 1 # flsun change
+        elif pressure_choice == 'off': # flsun change
+            pressure_value = 0 # flsun change
+        espa(self.sk_extruder, pressure_advance, new_smooth_time,pressure_value) # flsun change
         self.pressure_advance = pressure_advance
         self.pressure_advance_smooth_time = smooth_time
+        self.pressure_choice = pressure_choice # flsun change
     cmd_SET_PRESSURE_ADVANCE_help = "Set pressure advance parameters"
     def cmd_default_SET_PRESSURE_ADVANCE(self, gcmd):
         extruder = self.printer.lookup_object('toolhead').get_extruder()
@@ -91,10 +97,13 @@ class ExtruderStepper:
         smooth_time = gcmd.get_float('SMOOTH_TIME',
                                      self.pressure_advance_smooth_time,
                                      minval=0., maxval=.200)
-        self._set_pressure_advance(pressure_advance, smooth_time)
+        pressure_choice = gcmd.get('PRESSURE_CHOICE', # flsun change
+                                   self.pressure_choice) # flsun change
+        self._set_pressure_advance(pressure_advance, smooth_time,pressure_choice) # flsun change
         msg = ("pressure_advance: %.6f\n"
-               "pressure_advance_smooth_time: %.6f"
-               % (pressure_advance, smooth_time))
+               "pressure_advance_smooth_time: %.6f\n" # flsun change
+               "pressure_choice: %s" # flsun change
+               % (pressure_advance, smooth_time,pressure_choice)) # flsun change
         self.printer.set_rollover_info(self.name, "%s: %s" % (self.name, msg))
         gcmd.respond_info(msg, log=False)
     cmd_SET_E_ROTATION_DISTANCE_help = "Set extruder rotation distance"
@@ -192,10 +201,16 @@ class PrinterExtruder:
             or config.get('rotation_distance', None) is not None):
             self.extruder_stepper = ExtruderStepper(config)
             self.extruder_stepper.stepper.set_trapq(self.trapq)
-            pa = config.getfloat('pressure_advance', 0., minval=0.)
-            smooth_time = config.getfloat('pressure_advance_smooth_time',
-                                          0.040, above=0., maxval=.200)
-            self.extruder_stepper._set_pressure_advance(pa, smooth_time)
+            try: # flsun change
+                pa = config.getfloat('pressure_advance', 0., minval=0.) # flsun change
+                smooth_time = config.getfloat('pressure_advance_smooth_time', # flsun change
+                                              0.040, above=0., maxval=.200) # flsun change
+                pressure_choice = config.get('self_adaption_pressure_advance','on') # flsun change
+                if pressure_choice != 'on': # flsun change
+                    pressure_choice = 'off' # flsun change
+                self.extruder_stepper._set_pressure_advance(pa, smooth_time,pressure_choice) # flsun change
+            except: # flsun change
+                pass # flsun change
         # Register commands
         gcode = self.printer.lookup_object('gcode')
         if self.name == 'extruder':
@@ -275,6 +290,9 @@ class PrinterExtruder:
     def cmd_M104(self, gcmd, wait=False):
         # Set Extruder Temperature
         temp = gcmd.get_float('S', 0.)
+        gcode = self.printer.lookup_object('gcode') # flsun add，load gcode
+        if(temp > 0.5):
+            gcode.run_script_from_command("relay_on") #flsun add
         index = gcmd.get_int('T', None, minval=0)
         if index is not None:
             section = 'extruder'
@@ -332,3 +350,4 @@ def add_printer_objects(config):
             break
         pe = PrinterExtruder(config.getsection(section), i)
         printer.add_object(section, pe)
+

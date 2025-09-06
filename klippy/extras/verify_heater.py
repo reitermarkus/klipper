@@ -10,6 +10,11 @@ See the 'verify_heater' section in docs/Config_Reference.md
 for the parameters that control this check.
 """
 
+HEATER_EXPECT_GCODE = """
+    PAUSE
+    M117 Hotbed temperature is too low
+"""
+
 class HeaterCheck:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -17,6 +22,9 @@ class HeaterCheck:
                                             self.handle_connect)
         self.printer.register_event_handler("klippy:shutdown",
                                             self.handle_shutdown)
+        gcode_macro = self.printer.load_object(config, 'gcode_macro')
+        self.heater_expect_gcode = gcode_macro.load_template(config, 'gcode',
+                                                    HEATER_EXPECT_GCODE)
         self.heater_name = config.get_name().split()[1]
         self.heater = None
         self.hysteresis = config.getfloat('hysteresis', 5., minval=0.)
@@ -25,6 +33,15 @@ class HeaterCheck:
         default_gain_time = 20.
         if self.heater_name == 'heater_bed':
             default_gain_time = 60.
+            self.max_error = 200
+            self.heating_gain = 0.5
+        if self.heater_name == 'HotBed1':  #flsun add
+            default_gain_time = 80.
+            self.max_error = 240
+            self.heating_gain = 0.4
+        if self.heater_name == 'extruder':  #flsun add
+            self.hysteresis = 6
+            self.max_error = 150
         self.check_gain_time = config.getfloat(
             'check_gain_time', default_gain_time, minval=1.)
         self.approaching_target = self.starting_approach = False
@@ -65,6 +82,16 @@ class HeaterCheck:
                 self.approaching_target = self.starting_approach = True
                 self.goal_temp = temp + self.heating_gain
                 self.goal_systime = eventtime + self.check_gain_time
+            # on maintain process, if bed target temp above 100.0 ,but real temp below 90.0,
+            # execute HEATER_EXPECT_GCODE to pause and warn
+            elif self.heater_name == "HotBed1" or self.heater_name == "heater_bed":
+                if target >= 100.0 and temp < 90.0:
+                    print_stats = self.printer.lookup_object("print_stats")
+                    is_printing = print_stats.state == "printing"
+                    if is_printing:
+                        command = self.heater_expect_gcode.render()
+                        gcode = self.printer.lookup_object('gcode')
+                        gcode.run_script(command)
             elif self.error >= self.max_error:
                 # Failure due to inability to maintain target temperature
                 return self.heater_fault()

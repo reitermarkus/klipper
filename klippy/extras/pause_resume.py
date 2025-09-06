@@ -23,6 +23,8 @@ class PauseResume:
                                     desc=self.cmd_CLEAR_PAUSE_help)
         self.gcode.register_command("CANCEL_PRINT", self.cmd_CANCEL_PRINT,
                                     desc=self.cmd_CANCEL_PRINT_help)
+        self.gcode.register_command("F107", self.cmd_F107,
+                                    desc=self.cmd_F107_help)
         webhooks = self.printer.lookup_object('webhooks')
         webhooks.register_endpoint("pause_resume/cancel",
                                    self._handle_cancel_request)
@@ -65,10 +67,10 @@ class PauseResume:
         self.send_pause_command()
         self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=PAUSE_STATE")
         self.is_paused = True
-    def send_resume_command(self):
+    def send_resume_command(self,pre_gcode=None):
         if self.sd_paused:
             # Printing from virtual sd, run pause command
-            self.v_sd.do_resume()
+            self.v_sd.do_resume(pre_gcode)
             self.sd_paused = False
         else:
             self.gcode.respond_info("action:resumed")
@@ -83,6 +85,15 @@ class PauseResume:
             "RESTORE_GCODE_STATE NAME=PAUSE_STATE MOVE=1 MOVE_SPEED=%.4f"
             % (velocity))
         self.send_resume_command()
+        self.is_paused = False
+    cmd_F107_help = ("Immediately switch to printing mode after executing resume, and then preheat again")
+    def cmd_F107(self, gcmd):
+        if not self.is_paused:
+            gcmd.respond_info("Print is not paused, resume aborted")
+            return
+        velocity = gcmd.get_float('VELOCITY', self.recover_velocity)
+        pre_gcode = "PRE_RESUME \n" + "RESTORE_GCODE_STATE NAME=PAUSE_STATE MOVE=1 MOVE_SPEED=%.4f"% (velocity)
+        self.send_resume_command(pre_gcode)
         self.is_paused = False
     cmd_CLEAR_PAUSE_help = (
         "Clears the current paused state without resuming the print")

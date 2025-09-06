@@ -38,7 +38,8 @@ def setup_enable_pin(printer, pin):
         return enable
     mcu_enable = pin_params['chip'].setup_pin('digital_out', pin_params)
     mcu_enable.setup_max_duration(0.)
-    enable = pin_params['class'] = StepperEnablePin(mcu_enable, 0)
+    mcu_enable.setup_start_value(1,1)
+    enable = pin_params['class'] = StepperEnablePin(mcu_enable, 1)
     return enable
 
 # Enable line tracking for each stepper motor
@@ -47,7 +48,8 @@ class EnableTracking:
         self.stepper = stepper
         self.enable = enable
         self.callbacks = []
-        self.is_enabled = False
+        self.is_enabled = True
+        self.is_init = True
         self.stepper.add_active_callback(self.motor_enable)
     def register_state_callback(self, callback):
         self.callbacks.append(callback)
@@ -57,6 +59,11 @@ class EnableTracking:
                 cb(print_time, True)
             self.enable.set_enable(print_time)
             self.is_enabled = True
+            self.is_init = False
+        elif self.is_init:
+            for cb in self.callbacks:
+                cb(print_time, True)
+            self.is_init = False
     def motor_disable(self, print_time):
         if self.is_enabled:
             # Enable stepper on future stepper movement
@@ -79,6 +86,7 @@ class PrinterStepperEnable:
                                             self._handle_request_restart)
         # Register M18/M84 commands
         gcode = self.printer.lookup_object('gcode')
+        gcode.register_command("M17", self.cmd_M17)
         gcode.register_command("M18", self.cmd_M18)
         gcode.register_command("M84", self.cmd_M18)
         gcode.register_command("SET_STEPPER_ENABLE",
@@ -96,6 +104,16 @@ class PrinterStepperEnable:
             el.motor_disable(print_time)
         self.printer.send_event("stepper_enable:motor_off", print_time)
         toolhead.dwell(DISABLE_STALL_TIME)
+    def motor_on(self):
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.dwell(DISABLE_STALL_TIME)
+        print_time = toolhead.get_last_move_time()
+        enable_xyz_lines = self.enable_lines.copy()
+        del enable_xyz_lines['extruder']
+        for el in enable_xyz_lines.values():
+            el.motor_enable(print_time)
+        self.printer.send_event("stepper_enable:motor_on", print_time)
+        toolhead.dwell(DISABLE_STALL_TIME)
     def motor_debug_enable(self, stepper, enable):
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.dwell(DISABLE_STALL_TIME)
@@ -109,7 +127,11 @@ class PrinterStepperEnable:
             logging.info("%s has been manually disabled", stepper)
         toolhead.dwell(DISABLE_STALL_TIME)
     def _handle_request_restart(self, print_time):
-        self.motor_off()
+        #self.motor_off()
+        return
+    def cmd_M17(self, gcmd):
+        # Turn on motors
+        self.motor_on()
     def cmd_M18(self, gcmd):
         # Turn off motors
         self.motor_off()

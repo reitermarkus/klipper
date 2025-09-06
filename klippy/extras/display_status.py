@@ -39,6 +39,8 @@ class DisplayStatus:
     def cmd_M117(self, gcmd):
         msg = gcmd.get_raw_command_parameters() or None
         self.message = msg
-
+        if self.message is not None:
+            gcmd.respond_info(self.message) #flsun add, add this line to show message on web
+        
 def load_config(config):
     return DisplayStatus(config)

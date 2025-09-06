@@ -3,11 +3,17 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging
+import logging, chelper
+import subprocess,util #flsun add, for AI detect,Add a child thread
 
 class GCodeMove:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
+        #flsun add , add x_size_offset and y_size_offset to modify size precision
+        p_config = config.getsection('printer')
+        self.x_size_offset = p_config.getfloat('x_size_offset', 0, above=-0.035, below=0.035) 
+        self.y_size_offset = p_config.getfloat('y_size_offset', 0, above=-0.035, below=0.035) 
+        
         printer.register_event_handler("klippy:ready", self._handle_ready)
         printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         printer.register_event_handler("toolhead:set_position",
@@ -36,6 +42,9 @@ class GCodeMove:
         gcode.register_command('M114', self.cmd_M114, True)
         gcode.register_command('GET_POSITION', self.cmd_GET_POSITION, True,
                                desc=self.cmd_GET_POSITION_help)
+        gcode.register_command('SIZE_ANALYZE', self.cmd_SIZE_ANALYZE,
+                                    desc=self.cmd_SIZE_ANALYZE_help)
+        self.ffi_main, self.ffi_lib = chelper.get_ffi()
         self.Coord = gcode.Coord
         # G-Code coordinate manipulation
         self.absolute_coord = self.absolute_extrude = True
@@ -45,10 +54,76 @@ class GCodeMove:
         self.speed = 25.
         self.speed_factor = 1. / 60.
         self.extrude_factor = 1.
+        self.e_pos = 0 #flsun add, Record extruder coordinates
+        self.z_pos = 0 #flsun add, Record z coordinates
+        self.first_layer_detect = False #flsun add ,decide if it is first layer
+        self.reactor = self.printer.get_reactor() #flsun add
+        self.last_AI_z = 0 #flsun add,
+        self.max_z = 430 #flsun add
         # G-Code state
         self.saved_states = {}
         self.move_transform = self.move_with_transform = None
         self.position_with_transform = (lambda: [0., 0., 0., 0.])
+        self.size_data = {'X': [], 'Y': []}
+        self.size_flag = False 
+        self.size_cali_mode = p_config.get('size_cali_mode', 'Refined')
+        if str(self.size_cali_mode).strip() == "integrated".strip():
+            self.size_flag = False 
+        elif str(self.size_cali_mode).strip() == "Refined".strip():
+            self.size_flag = True
+        self.x_offset = list(p_config.getfloatlist('x_offset', (0.0,0.0,0.0,0.0,0.0,0.0), count=6))
+        self.y_offset = list(p_config.getfloatlist('y_offset', (0.0,0.0,0.0,0.0,0.0,0.0), count=6))
+        self.x_size = [70, 70, 70, 70, 70, 70]
+        self.y_size = [70, 70, 70, 70, 70, 70]
+        self.max_offset = 0.035
+        for i in range(6):
+            self.x_offset[i] = max(min(self.x_offset[i], self.max_offset), -self.max_offset)
+            self.y_offset[i] = max(min(self.y_offset[i], self.max_offset), -self.max_offset)
+            self.x_size[i] = 70.0 - 70.0*self.x_offset[i]
+            self.y_size[i] = 70.0 - 70.0*self.y_offset[i]
+    cmd_SIZE_ANALYZE_help = "size calibration"
+    def cmd_SIZE_ANALYZE(self, gcmd):
+        args = {'X': 6, 'Y': 6}
+        input_x = False
+        input_y = False
+        for name, count in args.items():
+            data = gcmd.get(name, None)
+            if data is None:
+                continue
+            try:
+                parts = list(map(float, data.split(',')))
+            except:
+                raise gcmd.error("Unable to parse parameter '%s'" % (name,))
+            if len(parts) != count:
+                raise gcmd.error("Parameter '%s' must have %d values"
+                                 % (name, count))
+            self.size_data[name] = parts
+            if 'X' in name:
+                input_x = True
+            if 'Y' in name:
+                input_y = True
+            logging.info("SIZE_ANALYZE %s = %s", name, parts)
+        #The blocks are arranged according to this pattern
+        # 1   2   3     SIZE_ANALYZE X=L_1_2,L_2_3,L_4_5,L_5_6,L_7_8,L_8_9
+        # 4   5   6     SIZE_ANALYZE Y=L_1_4,L_4_7,L_2_5,L_5_8,L_3_6,L_6_9
+        # 7   8   9
+        # or
+        #     1
+        # 2       3
+        #     4
+        configfile = self.printer.lookup_object('configfile')
+        self.new_x_offset = []
+        self.new_y_offset = []
+        if len(self.size_data['X']) == 6 and input_x:
+            self.size_data['X'][3] -= 0.1
+            for i in range(len(self.size_data['X'])):
+                self.new_x_offset.append((((70.0 - self.size_data['X'][i])/70) + 1) * (1 + self.x_offset[i]) - 1)
+            configfile.set('printer', 'x_offset', "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f" % tuple(self.new_x_offset))
+        if len(self.size_data['Y']) == 6 and input_y:
+            for i in range(len(self.size_data['Y'])):
+                self.new_y_offset.append((((70.0 - self.size_data['Y'][i])/70) + 1) * (1 + self.y_offset[i]) - 1)
+            configfile.set('printer', 'y_offset', "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f" % tuple(self.new_y_offset))
+
     def _handle_ready(self):
         self.is_printer_ready = True
         if self.move_transform is None:
@@ -73,6 +148,7 @@ class GCodeMove:
         self.base_position[3] = self.last_position[3]
     def _handle_home_rails_end(self, homing_state, rails):
         self.reset_last_position()
+        self.max_z = self.last_position[2] #flsun add
         for axis in homing_state.get_axes():
             self.base_position[axis] = self.homing_position[axis]
     def set_move_transform(self, transform, force=False):
@@ -110,6 +186,12 @@ class GCodeMove:
         if self.is_printer_ready:
             self.last_position = self.position_with_transform()
     # G-Code movement commands
+    def get_xy_size_offset(self):
+        return self.x_size_offset, self.y_size_offset
+    def set_first_layer_detect(self): #flsun add
+        self.first_layer_detect = True
+        self.z_pos = 9999.99
+        self.last_AI_z = 0
     def cmd_G1(self, gcmd):
         # Move
         params = gcmd.get_command_parameters()
@@ -131,6 +213,35 @@ class GCodeMove:
                 else:
                     # value relative to base coordinate position
                     self.last_position[3] = v + self.base_position[3]
+                self.z_pos = self.last_position[2]
+            if self.last_position[3] < 10.0: #flsun add,set self.e_pos = 0 when a print start
+                self.e_pos = self.last_position[3]
+            if self.last_position[3] - self.e_pos > 70 and self.last_position[3] > 100 and self.last_position[2] - self.last_AI_z >= 0.10: #flsun add ,Perform AI detection when these conditions are met   
+                eventtime = self.reactor.monotonic()
+                idle_timeout = self.printer.lookup_object("idle_timeout")
+                is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+                if is_printing:
+                    self.e_pos = self.last_position[3]
+                    self.last_AI_z = self.last_position[2]
+                    command = ["bash", "/home/pi/flsun_func/AI_detect/printing_run.sh"]
+                    util.start_subprocess(command)
+            #flsun add, modify x and y direction,
+            self.cali_position = self.last_position[:] #flsun add
+            real_x_size_offset = real_y_size_offset = 0
+            if self.last_position[2] > (self.max_z - 2.5):
+                real_x_size_offset = 0
+                real_y_size_offset = 0
+            else:
+                if self.size_flag:
+                    self.ffi_lib.get_size_offset(self.x_size, self.y_size, self.max_offset, self.last_position[0], self.last_position[1])
+                    real_x_size_offset = self.ffi_lib.get_x_size_offset()
+                    real_y_size_offset = self.ffi_lib.get_y_size_offset()
+                else:
+                    real_x_size_offset = self.x_size_offset
+                    real_y_size_offset = self.y_size_offset
+            self.cali_position[0] = self.last_position[0] * (1 + real_x_size_offset) 
+            self.cali_position[1] = self.last_position[1] * (1 + real_y_size_offset) 
+            
             if 'F' in params:
                 gcode_speed = float(params['F'])
                 if gcode_speed <= 0.:
@@ -140,7 +251,7 @@ class GCodeMove:
         except ValueError as e:
             raise gcmd.error("Unable to parse move '%s'"
                              % (gcmd.get_commandline(),))
-        self.move_with_transform(self.last_position, self.speed)
+        self.move_with_transform(self.cali_position, self.speed) #flsun modfiy
     # G-Code coordinate manipulation
     def cmd_G20(self, gcmd):
         # Set units to inches
@@ -166,7 +277,7 @@ class GCodeMove:
         for i, offset in enumerate(offsets):
             if offset is not None:
                 if i == 3:
-                    offset *= self.extrude_factor
+                    offset *= self.extrude_factor 
                 self.base_position[i] = self.last_position[i] - offset
         if offsets == [None, None, None, None]:
             self.base_position = list(self.last_position)
@@ -174,6 +285,15 @@ class GCodeMove:
         # Get Current Position
         p = self._get_gcode_position()
         gcmd.respond_raw("X:%.3f Y:%.3f Z:%.3f E:%.3f" % tuple(p))
+        f = gcmd.get_float('F', None, above=-1.)
+        size_copy = gcmd.get_float('S', None, above=-1.)
+        if f == 1.0:
+            self.first_layer_detect = True
+        elif f == 0.0:
+            self.first_layer_detect = False
+        if size_copy == 1.0:
+            command = ["bash", "/home/pi/flsun_func/change_printer_cfg_size_offset.sh"]
+            util.start_subprocess(command)
     def cmd_M220(self, gcmd):
         # Set speed factor override percentage
         value = gcmd.get_float('S', 100., above=0.) / (60. * 100.)
@@ -239,6 +359,18 @@ class GCodeMove:
         if gcmd.get_int('MOVE', 0):
             speed = gcmd.get_float('MOVE_SPEED', self.speed, above=0.)
             self.last_position[:3] = state['last_position'][:3]
+            toolhead = self.printer.lookup_object('toolhead', None)
+            # If the recorded position is already higher than max_z, 
+            # then it can only be restored to the origin
+            if toolhead is not None:
+                kin = toolhead.get_kinematics()
+                max_z = kin.axes_max[2]
+                if self.last_position[2] >= max_z:
+                    logging.info("move out of range, change z pos:%s --> %s",
+                                self.last_position[2], max_z,)
+                    self.last_position[2] = max_z
+                    self.last_position[1] = 0
+                    self.last_position[0] = 0
             self.move_with_transform(self.last_position, speed)
     cmd_GET_POSITION_help = (
         "Return information on the current location of the toolhead")

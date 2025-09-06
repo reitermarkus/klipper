@@ -12,12 +12,24 @@ class PrinterHeaterFan:
         self.printer = config.get_printer()
         self.printer.load_object(config, 'heaters')
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.name = config.get_name().split()[-1]
         self.heater_names = config.getlist("heater", ("extruder",))
         self.heater_temp = config.getfloat("heater_temp", 50.0)
         self.heaters = []
         self.fan = fan.Fan(config, default_shutdown_speed=1.)
         self.fan_speed = config.getfloat("fan_speed", 1., minval=0., maxval=1.)
         self.last_speed = 0.
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_mux_command("SET_HEATER_FAN", "HEATER_FAN",
+                                   self.name, self.cmd_SET_HEATER_FAN,
+                                   desc=self.cmd_SET_HEATER_FAN_help)
+        gcode.register_mux_command("HEATER_FAN_MANUAL_ON", "HEATER_FAN",
+                                   self.name, self.cmd_HEATER_FAN_MANUAL_ON,
+                                   desc="heater fan '%s' manual mode on"%self.name)
+        gcode.register_mux_command("HEATER_FAN_MANUAL_OFF", "HEATER_FAN",
+                                   self.name, self.cmd_HEATER_FAN_MANUAL_OFF,
+                                   desc="heater fan '%s' manual mode off"%self.name)
+        self.manual_set_speed = False
     def handle_ready(self):
         pheaters = self.printer.lookup_object('heaters')
         self.heaters = [pheaters.lookup_heater(n) for n in self.heater_names]
@@ -31,12 +43,33 @@ class PrinterHeaterFan:
             current_temp, target_temp = heater.get_temp(eventtime)
             if target_temp or current_temp > self.heater_temp:
                 speed = self.fan_speed
-        if speed != self.last_speed:
+        if speed != self.last_speed and not self.manual_set_speed:
             self.last_speed = speed
             curtime = self.printer.get_reactor().monotonic()
             print_time = self.fan.get_mcu().estimated_print_time(curtime)
             self.fan.set_speed(print_time + PIN_MIN_TIME, speed)
         return eventtime + 1.
+    cmd_SET_HEATER_FAN_help = "Sets a heater fan speed"
+    def cmd_SET_HEATER_FAN(self, gcmd):
+        speed = gcmd.get_float('SPEED', 0.)
+        curtime = self.printer.get_reactor().monotonic()
+        gcode = self.printer.lookup_object('gcode')
+        for heater in self.heaters:
+            current_temp, target_temp = heater.get_temp(curtime)
+            if target_temp and speed <= 0:
+                gcode.respond_info("Heater '%s' is heating,set heater fan '%s' speed to %.2f failed" % 
+                                   (heater.name, self.name, speed))
+                return
+
+        self.last_speed = speed
+        self.manual_set_speed = True
+        print_time = self.fan.get_mcu().estimated_print_time(curtime)
+        self.fan.set_speed(print_time + PIN_MIN_TIME, speed)
+        gcode.respond_info("Set heater fan '%s' speed to %.2f" % (self.name, speed))
+    def cmd_HEATER_FAN_MANUAL_ON(self, gcmd):
+        self.manual_set_speed = True
+    def cmd_HEATER_FAN_MANUAL_OFF(self, gcmd):
+        self.manual_set_speed = False
 
 def load_config_prefix(config):
     return PrinterHeaterFan(config)

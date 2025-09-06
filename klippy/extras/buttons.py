@@ -3,7 +3,7 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging
+import logging,time,threading
 
 
 ######################################################################
@@ -12,9 +12,12 @@ import logging
 
 QUERY_TIME = .002
 RETRANSMIT_COUNT = 50
+DEBOUNCE_INTERVAL = 0.02
+DEBOUNCE_COUNT = 3
 
 class MCU_buttons:
     def __init__(self, printer, mcu):
+        self.printer = printer
         self.reactor = printer.get_reactor()
         self.mcu = mcu
         self.mcu.register_config_callback(self.build_config)
@@ -23,6 +26,8 @@ class MCU_buttons:
         self.invert = self.last_button = 0
         self.ack_cmd = None
         self.ack_count = 0
+        self.lock = threading.Lock()
+        self.debounce_count = 0
     def setup_buttons(self, pins, callback):
         mask = 0
         shift = len(self.pin_list)
@@ -54,6 +59,32 @@ class MCU_buttons:
                 self.invert), is_init=True)
         self.mcu.register_response(self.handle_buttons_state,
                                    "buttons_state", self.oid)
+    #消抖线程，目前仅断电开关（PD3）使用；
+    # 在klipper启动时，在下发buttons配置时已经设置了消抖参数，
+    # 默认采集两次，间隔由rest_ticks(0.002s)指定，所有的button都使用该值；
+    # 但对于断电开关，其抖动比较特殊，所以需要单独处理；
+    def thread_debounce(self,mask,shift,callback,btime):
+        if self.lock.acquire(blocking=False):
+            state = (self.last_button & mask) >> shift
+            while self.debounce_count < DEBOUNCE_COUNT:
+                if state :
+                    logging.info("power_loss_sensor trigger,debounce_count=%d"%self.debounce_count)
+                    self.debounce_count += 1
+                    time.sleep(DEBOUNCE_INTERVAL)
+                    state = (self.last_button & mask) >> shift
+                else:
+                    logging.info("touch by mistake,do not power loss action")
+                    break
+
+            self.debounce_count = 0
+            if state and not self.printer.power_loss_processing:
+                self.printer.power_loss_occur = True # record power loss event 
+                self.printer.power_loss_processing = True # 标记断电处理流程正在进行
+                logging.info("do power loss action")
+            self.reactor.register_async_callback((lambda et, c=callback, bt=btime, s=state: c(bt, s)))
+            self.lock.release()
+        else:
+            logging.info("power_loss_sensor debounce thread is running")
     def handle_buttons_state(self, params):
         # Expand the message ack_count from 8-bit
         ack_count = self.ack_count
@@ -70,17 +101,24 @@ class MCU_buttons:
         # Send ack to MCU
         self.ack_cmd.send([self.oid, new_count])
         self.ack_count += new_count
-        # Call self.handle_button() with this event in main thread
-        for nb in new_buttons:
-            self.reactor.register_async_callback(
-                (lambda e, s=self, b=nb: s.handle_button(e, b)))
-    def handle_button(self, eventtime, button):
-        button ^= self.invert
-        changed = button ^ self.last_button
-        for mask, shift, callback in self.callbacks:
-            if changed & mask:
-                callback(eventtime, (button & mask) >> shift)
-        self.last_button = button
+        # Invoke callbacks with this event in main thread
+        btime = params['#receive_time']
+        for button in new_buttons:
+            button ^= self.invert
+            changed = button ^ self.last_button
+            self.last_button = button
+            for mask, shift, callback in self.callbacks:
+                if changed & mask:
+                    state = (button & mask) >> shift
+                    #if self.pin_list[shift][0] == 'PD3' and state \
+                    #    and not self.printer.power_loss_processing:
+                    if self.pin_list[shift][0] == 'PD3' :
+                        t = threading.Thread(target=self.thread_debounce,args=(mask,shift,callback,btime))
+                        t.start()
+                        continue
+                    self.reactor.register_async_callback(
+                        (lambda et, c=callback, bt=btime, s=state: c(bt, s)))
+
 
 
 ######################################################################

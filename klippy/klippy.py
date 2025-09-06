@@ -4,10 +4,9 @@
 # Copyright (C) 2016-2020  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import sys, os, gc, optparse, logging, time, collections, importlib
-import util, reactor, queuelogger, msgproto
+import sys, os, gc, optparse, logging, time, collections, importlib,signal
+import util, reactor, socklogger, msgproto
 import gcode, configfile, pins, mcu, toolhead, webhooks
-
 message_ready = "Printer is ready"
 
 message_startup = """
@@ -59,10 +58,13 @@ class Printer:
         self.in_shutdown_state = False
         self.run_result = None
         self.event_handlers = {}
+        self.power_loss_occur = False # set to 1 if power loss occur 
+        self.power_loss_processing = False # 标记断电处理流程是否正在进行，True表示正在进行，False表示未进行或者已处理完。
         self.objects = collections.OrderedDict()
         # Init printer components that must be setup prior to config
         for m in [gcode, webhooks]:
             m.add_early_printer_objects(self)
+        signal.signal(signal.SIGTERM, self.term_handler)
     def get_start_args(self):
         return self.start_args
     def get_reactor(self):
@@ -191,6 +193,8 @@ class Printer:
             logging.exception("MCU error during connect")
             self._set_state("%s%s" % (str(e), message_mcu_connect_error))
             util.dump_mcu_build()
+            gcode =  self.lookup_object('gcode') #flsun add
+            gcode.request_restart('firmware_restart') #flsun add            
             return
         except Exception as e:
             logging.exception("Unhandled exception during connect")
@@ -240,11 +244,18 @@ class Printer:
     def set_rollover_info(self, name, info, log=True):
         if log:
             logging.info(info)
-        if self.bglogger is not None:
-            self.bglogger.set_rollover_info(name, info)
+        #if self.bglogger is not None:
+        #    self.bglogger.set_rollover_info(name, info)
     def invoke_shutdown(self, msg):
         if self.in_shutdown_state:
             return
+        #flsun add,don't shutdown while ADC out of range (min_temp,max_temp)
+        if "ADC out of range" in msg:
+            return
+        #flsun add, firmware_restart after shutdwon ,and save waning in mylog.txt
+        flsun_log = self.lookup_object("rotate_logger")
+        flsun_log.error(msg,"Reboot",notify=True)
+
         logging.error("Transition to shutdown state: %s", msg)
         self.in_shutdown_state = True
         self._set_state("%s%s" % (msg, message_shutdown))
@@ -255,6 +266,11 @@ class Printer:
                 logging.exception("Exception during shutdown handler")
         logging.info("Reactor garbage collection: %s",
                      self.reactor.get_gc_stats())
+        gcode =  self.lookup_object('gcode')
+        gcode.request_restart('firmware_restart')
+
+    def my_shutdown(self, msg): #flsun add,shutdown ,and set my_shutdown_state to True
+        self.invoke_shutdown("power loss")
     def invoke_async_shutdown(self, msg):
         self.reactor.register_async_callback(
             (lambda e: self.invoke_shutdown(msg)))
@@ -262,6 +278,26 @@ class Printer:
         self.event_handlers.setdefault(event, []).append(callback)
     def send_event(self, event, *params):
         return [cb(*params) for cb in self.event_handlers.get(event, [])]
+
+    def safe_exit(self):
+        try:
+            global sys_exit 
+            sys_exit = True
+            gcode =  self.lookup_object('gcode')
+            if gcode :
+                gcode.run_script("_SAFE_EXIT")
+            self.send_event("klippy:system_exit")
+        except Exception as e:
+            logging.warning("Error on handling end_print event:%s"%str(e))
+        self.request_exit('exit')
+    #termination handler
+    def term_handler(self, signum, frame):
+        logging.info("klipper do system exit")
+        try:
+            self.reactor.register_async_callback((lambda e: self.safe_exit()))
+        except Exception as e:
+            logging.warning("Error on handling system exit event:%s"%str(e))
+
     def request_exit(self, result):
         if self.run_result is None:
             self.run_result = result
@@ -296,6 +332,7 @@ def arg_dictionary(option, opt_str, value, parser):
         parser.values.dictionary = {}
     parser.values.dictionary[key] = fname
 
+sys_exit = False
 def main():
     usage = "%prog [options] <config file>"
     opts = optparse.OptionParser(usage)
@@ -340,11 +377,11 @@ def main():
     bglogger = None
     if options.logfile:
         start_args['log_file'] = options.logfile
-        bglogger = queuelogger.setup_bg_logging(options.logfile, debuglevel)
+        bglogger = socklogger.set_logging(debuglevel)
     else:
         logging.basicConfig(level=debuglevel)
     logging.info("Starting Klippy...")
-    start_args['software_version'] = util.get_git_version()
+    start_args['software_version'] = util.get_flsun_version() #util.get_git_version()
     start_args['cpu_info'] = util.get_cpu_info()
     if bglogger is not None:
         versions = "\n".join([
@@ -360,9 +397,10 @@ def main():
 
     # Start Printer() class
     while 1:
-        if bglogger is not None:
-            bglogger.clear_rollover_info()
-            bglogger.set_rollover_info('versions', versions)
+        global sys_exit
+        if sys_exit:
+            logging.info("get singal exit,to exit")
+            break
         gc.collect()
         main_reactor = reactor.Reactor(gc_checking=True)
         printer = Printer(main_reactor, bglogger, start_args)

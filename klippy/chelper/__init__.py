@@ -21,12 +21,12 @@ SOURCE_FILES = [
     'pollreactor.c', 'msgblock.c', 'trdispatch.c',
     'kin_cartesian.c', 'kin_corexy.c', 'kin_corexz.c', 'kin_delta.c',
     'kin_polar.c', 'kin_rotary_delta.c', 'kin_winch.c', 'kin_extruder.c',
-    'kin_shaper.c',
+    'kin_shaper.c', 'flsun_func.c',
 ]
 DEST_LIB = "c_helper.so"
 OTHER_FILES = [
     'list.h', 'serialqueue.h', 'stepcompress.h', 'itersolve.h', 'pyhelper.h',
-    'trapq.h', 'pollreactor.h', 'msgblock.h'
+    'trapq.h', 'pollreactor.h', 'msgblock.h', 'flsun_func.h'
 ]
 
 defs_stepcompress = """
@@ -99,6 +99,14 @@ defs_trapq = """
         , double start_time, double end_time);
 """
 
+defs_flsun_func = """
+    double get_offset(double px, double py, double lsx, double lsy, double lex, double ley, double spx, double spy, double offset, double move_distance);
+    double adjust_matrix(int i, int j, double offset);
+    void get_size_offset(const double x_size[6], const double y_size[6], double max_offset, double X, double Y); 
+    double get_x_size_offset();
+    double get_y_size_offset();
+"""
+
 defs_kin_cartesian = """
     struct stepper_kinematics *cartesian_stepper_alloc(char axis);
     struct stepper_kinematics *cartesian_reverse_stepper_alloc(char axis);
@@ -135,7 +143,7 @@ defs_kin_winch = """
 defs_kin_extruder = """
     struct stepper_kinematics *extruder_stepper_alloc(void);
     void extruder_set_pressure_advance(struct stepper_kinematics *sk
-        , double pressure_advance, double smooth_time);
+        , double pressure_advance, double smooth_time, int choice_value);
 """
 
 defs_kin_shaper = """
@@ -204,7 +212,7 @@ defs_std = """
 defs_all = [
     defs_pyhelper, defs_serialqueue, defs_std, defs_stepcompress,
     defs_itersolve, defs_trapq, defs_trdispatch,
-    defs_kin_cartesian, defs_kin_corexy, defs_kin_corexz, defs_kin_delta,
+    defs_kin_cartesian, defs_flsun_func, defs_kin_corexy, defs_kin_corexz, defs_kin_delta,
     defs_kin_polar, defs_kin_rotary_delta, defs_kin_winch, defs_kin_extruder,
     defs_kin_shaper,
 ]
@@ -261,13 +269,13 @@ def get_ffi():
         srcfiles = get_abs_files(srcdir, SOURCE_FILES)
         ofiles = get_abs_files(srcdir, OTHER_FILES)
         destlib = get_abs_files(srcdir, [DEST_LIB])[0]
-        if check_build_code(srcfiles+ofiles+[__file__], destlib):
-            if check_gcc_option(SSE_FLAGS):
-                cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
-            else:
-                cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
-            logging.info("Building C code module %s", DEST_LIB)
-            do_build_code(cmd % (destlib, ' '.join(srcfiles)))
+        # if check_build_code(srcfiles+ofiles+[__file__], destlib):
+        #     if check_gcc_option(SSE_FLAGS):
+        #         cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
+        #     else:
+        #         cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
+        #     logging.info("Building C code module %s", DEST_LIB)
+        #     do_build_code(cmd % (destlib, ' '.join(srcfiles)))
         FFI_main = cffi.FFI()
         for d in defs_all:
             FFI_main.cdef(d)
@@ -294,9 +302,9 @@ def run_hub_ctrl(enable_power):
     hubdir = os.path.join(srcdir, HC_SOURCE_DIR)
     srcfiles = get_abs_files(hubdir, HC_SOURCE_FILES)
     destlib = get_abs_files(hubdir, [HC_TARGET])[0]
-    if check_build_code(srcfiles, destlib):
-        logging.info("Building C code module %s", HC_TARGET)
-        do_build_code(HC_COMPILE_CMD % (destlib, ' '.join(srcfiles)))
+    # if check_build_code(srcfiles, destlib):
+    #     logging.info("Building C code module %s", HC_TARGET)
+    #     do_build_code(HC_COMPILE_CMD % (destlib, ' '.join(srcfiles)))
     os.system(HC_CMD % (hubdir, enable_power))
 
 

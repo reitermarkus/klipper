@@ -3,7 +3,9 @@
 # Copyright (C) 2016-2021  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, re, logging, collections, shlex
+import os, re, logging, collections, shlex, configparser
+import subprocess
+import util
 
 class CommandError(Exception):
     pass
@@ -96,6 +98,7 @@ class GCodeDispatch:
         printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         printer.register_event_handler("klippy:disconnect",
                                        self._handle_disconnect)
+        self.print_stats = None
         # Command handling
         self.is_printer_ready = False
         self.mutex = printer.get_reactor().mutex()
@@ -105,8 +108,8 @@ class GCodeDispatch:
         self.mux_commands = {}
         self.gcode_help = {}
         # Register commands needed before config file is loaded
-        handlers = ['M110', 'M112', 'M115',
-                    'RESTART', 'FIRMWARE_RESTART', 'ECHO', 'STATUS', 'HELP']
+        handlers = ['M110', 'M112', 'M115', 'LOAD_FUNCTION_SWITCH',
+                    'RESTART', 'FIRMWARE_RESTART', 'F100', 'ECHO', 'STATUS', 'HELP']
         for cmd in handlers:
             func = getattr(self, 'cmd_' + cmd)
             desc = getattr(self, 'cmd_' + cmd + '_help', None)
@@ -169,6 +172,7 @@ class GCodeDispatch:
     def _handle_ready(self):
         self.is_printer_ready = True
         self.gcode_handlers = self.ready_gcode_handlers
+        self.print_stats = self.printer.lookup_object("print_stats")
         self._respond_state("Ready")
     # Parse input into commands
     args_r = re.compile('([A-Z_]+|[A-Z*/])')
@@ -179,6 +183,9 @@ class GCodeDispatch:
             cpos = line.find(';')
             if cpos >= 0:
                 line = line[:cpos]
+            if len(line) > 2 and self.print_stats != None and self.print_stats.state != 'printing' :
+                #record gcode if not on printing state
+                logging.info('gcode:'+line)
             # Break line into parts and determine command
             parts = self.args_r.split(line.upper())
             numparts = len(parts)
@@ -235,6 +242,9 @@ class GCodeDispatch:
         self.respond_raw('!! %s' % (lines[0].strip(),))
         if self.is_fileinput:
             self.printer.request_exit('error_exit')
+        flsun_log = self.printer.lookup_object("rotate_logger")
+        flsun_log.error(msg,"None")
+
     def _respond_state(self, state):
         self.respond_info("Klipper state: %s" % (state,), log=False)
     # Parameter parsing helpers
@@ -331,6 +341,11 @@ class GCodeDispatch:
     cmd_FIRMWARE_RESTART_help = "Restart firmware, host, and reload config"
     def cmd_FIRMWARE_RESTART(self, gcmd):
         self.request_restart('firmware_restart')
+    def cmd_F100(self,gcmd):
+        try:
+            util.start_subprocess(["sync"])
+        except Exception as e:
+            logging.info(str(e))
     def cmd_ECHO(self, gcmd):
         gcmd.respond_info(gcmd.get_commandline(), log=False)
     cmd_STATUS_help = "Report the printer status"
@@ -351,6 +366,34 @@ class GCodeDispatch:
             if cmd in self.gcode_help:
                 cmdhelp.append("%-10s: %s" % (cmd, self.gcode_help[cmd]))
         gcmd.respond_info("\n".join(cmdhelp), log=False)
+    def cmd_LOAD_FUNCTION_SWITCH(self, gcmd):
+        config = configparser.ConfigParser()
+        try:
+            config.read('/home/pi/qt/out_linux/menuconfig.ini')
+            # power loss
+            PowerOytageContinuation = config.getboolean('SettingPage', 'PowerOytageContinuation')
+            if PowerOytageContinuation :
+                enable = 1
+            else:
+                enable = 0
+            self.run_script_from_command("SET_FILAMENT_SENSOR SENSOR=power_loss ENABLE=%d"%enable)
+            # filament_switch_sensor
+            filament_switch_sensor = config.getboolean('SettingPage', 'MaterialBreakageDetection')
+            if filament_switch_sensor :
+                enable = 1
+            else:
+                enable = 0
+            self.run_script_from_command("SET_FILAMENT_SENSOR SENSOR=filament_sensor ENABLE=%d"%enable)
+            # filament_motion_sensor
+            config.read('/home/pi/qt/out_linux/AiConfig.ini')
+            filament_motion_sensor = config.getboolean('AiDetection', 'PlugDetection')
+            if filament_motion_sensor :
+                enable = 1
+            else:
+                enable = 0
+            self.run_script_from_command("SET_FILAMENT_SENSOR SENSOR=my_sensor ENABLE=%d"%enable)
+        except Exception:
+            logging.info("load function switch error,use default value")
 
 # Support reading gcode from a pseudo-tty interface
 class GCodeIO:
@@ -453,3 +496,4 @@ class GCodeIO:
 def add_early_printer_objects(printer):
     printer.add_object('gcode', GCodeDispatch(printer))
     printer.add_object('gcode_io', GCodeIO(printer))
+

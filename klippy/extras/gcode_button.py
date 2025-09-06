@@ -9,6 +9,9 @@ class GCodeButton:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name().split(' ')[-1]
+        self.pressed_time = 0 #flsun add
+        self.release_time = 0 #flsun add
+        self.triggered_time = 0 #flsun add
         self.pin = config.get('pin')
         self.last_state = 0
         buttons = self.printer.load_object(config, "buttons")
@@ -36,7 +39,29 @@ class GCodeButton:
         self.last_state = state
         template = self.press_template
         if not state:
+            self.release_time = float(eventtime)
+            self.triggered_time = self.release_time - self.pressed_time
+            if 'motor_a' in self.name:
+                if self.triggered_time < 0.25: # 200ms
+                    self.gcode.run_script_from_command("M117 please calibrate motor A!")
+                elif self.triggered_time > 0.25 and self.triggered_time < 0.8 and not self.printer.in_shutdown_state: #500ms
+                    self.printer.invoke_shutdown("motor A occur error")
+                    return
+            if 'motor_b' in self.name:
+                if self.triggered_time < 0.25:
+                    self.gcode.run_script_from_command("M117 please calibrate motor B!")
+                elif self.triggered_time > 0.25 and self.triggered_time < 0.8 and not self.printer.in_shutdown_state: #500ms
+                    self.printer.invoke_shutdown("motor B occur error")
+                    return
+            if 'motor_c' in self.name:
+                if self.triggered_time < 0.25:
+                    self.gcode.run_script_from_command("M117 please calibrate motor C!")
+                elif self.triggered_time > 0.25 and self.triggered_time < 0.8 and not self.printer.in_shutdown_state: #500ms
+                    self.printer.invoke_shutdown("motor C occur error")
+                    return
             template = self.release_template
+        else:
+            self.pressed_time = float(eventtime)
         try:
             self.gcode.run_script(template.render())
         except:

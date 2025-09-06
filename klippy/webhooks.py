@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license
 import logging, socket, os, sys, errno, json, collections
 import gcode
-
+import extras.heaters as heater #flsun add, add heater module
 REQUEST_LOG_SIZE = 20
 
 # Json decodes strings as unicode types in Python 2.x.  This doesn't
@@ -214,6 +214,13 @@ class ClientConnection:
     def process_received(self, eventtime):
         try:
             data = self.sock.recv(4096)
+            #flsun add,break M109 and M190 while receive "pause_resume/cancel"
+            if "pause_resume/cancel" in str(data):
+                heater.heat_break = 1
+            #flsun add,set heat_break = 0  while start a print
+            if "SDCARD_PRINT_FILE FILENAME=" in str(data):
+                heater.heat_break = 0
+
         except socket.error as e:
             # If bad file descriptor allow connection to be
             # closed by the data check
@@ -257,7 +264,13 @@ class ClientConnection:
         self.send(result)
 
     def send(self, data):
-        jmsg = json.dumps(data, separators=(',', ':'))
+        try:
+            jmsg = json.dumps(data, separators=(',', ':'))
+        except Exception as e:
+            msg = ("Sending response to client Error: %s" % data)
+            logging.exception(msg)
+            self.close()
+            return
         self.send_buffer += jmsg.encode() + b"\x03"
         if not self.is_sending_data:
             self.is_sending_data = True

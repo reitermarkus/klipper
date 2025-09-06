@@ -3,13 +3,18 @@
 # Copyright (C) 2020  Eric Callahan <arksine.code@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 
 class PrintStats:
     def __init__(self, config):
         printer = config.get_printer()
         self.gcode_move = printer.load_object(config, 'gcode_move')
+        gcode = printer.lookup_object('gcode')
+        gcode.register_command('SET_FILAMENT_USED',
+                               self.cmd_SET_FILAMENT_USED)
         self.reactor = printer.get_reactor()
         self.reset()
+        self.duration = 0 #wzy add
     def _update_filament_usage(self, eventtime):
         gc_status = self.gcode_move.get_status(eventtime)
         cur_epos = gc_status['position'].e
@@ -52,12 +57,14 @@ class PrintStats:
             return
         self.state = state
         self.error_message = error_message
-        eventtime = self.reactor.monotonic()
-        self.total_duration = eventtime - self.print_start_time
+        eventtime = self.reactor.monotonic()      
+        self.total_duration = eventtime - self.print_start_time       
         if self.filament_used < 0.0000001:
             # No positive extusion detected during print
             self.init_duration = self.total_duration - \
                 self.prev_pause_duration
+        self.total_duration += self.duration
+        self.duration = 0
         self.print_start_time = None
     def reset(self):
         self.filename = self.error_message = ""
@@ -79,6 +86,7 @@ class PrintStats:
             if self.filament_used < 0.0000001:
                 # Track duration prior to extrusion
                 self.init_duration = self.total_duration - time_paused
+            self.total_duration += self.duration
         print_duration = self.total_duration - self.init_duration - time_paused
         return {
             'filename': self.filename,
@@ -88,6 +96,11 @@ class PrintStats:
             'state': self.state,
             'message': self.error_message
         }
+    def modify_print_time(self, time): #wzy add
+        self.duration = time
+    def cmd_SET_FILAMENT_USED(self, gcmd):
+        filament_used = gcmd.get_float('S', None)
+        self.filament_used = filament_used
 
 def load_config(config):
     return PrintStats(config)

@@ -23,10 +23,15 @@ class EncoderSensor:
         self.reactor = self.printer.get_reactor()
         self.runout_helper = filament_switch_sensor.RunoutHelper(config)
         self.get_status = self.runout_helper.get_status
+        self.stats = self.runout_helper.stats
         self.extruder = None
         self.estimated_print_time = None
         # Initialise internal state
         self.filament_runout_pos = None
+        self.filament_len = 0 #flsun test
+        gcode = self.printer.lookup_object('gcode') #flsun test
+        gcode.register_command('SET_FILAMENT_NUM_ZERO', self.cmd_SET_FILAMENT_NUM_ZERO)
+        gcode.register_command('GET_FILAMENT_NUM', self.cmd_GET_FILAMENT_NUM)
         # Register commands and event handlers
         self.printer.register_event_handler('klippy:ready',
                 self._handle_ready)
@@ -67,11 +72,29 @@ class EncoderSensor:
                 extruder_pos < self.filament_runout_pos)
         return eventtime + CHECK_RUNOUT_TIMEOUT
     def encoder_event(self, eventtime, state):
+        self.filament_len += 1.9468 #flsun test
         if self.extruder is not None:
             self._update_filament_runout_pos(eventtime)
             # Check for filament insertion
             # Filament is always assumed to be present on an encoder event
             self.runout_helper.note_filament_present(True)
-
+    def recover_motion_check(self,eventtime):
+        if not self.get_status(eventtime)['enabled']:
+            return
+        if eventtime is None:
+            eventtime = self.reactor.monotonic()
+        # 更新一次位置参数，激活检测
+        if self.extruder is not None:
+            self._update_filament_runout_pos(eventtime)
+            self.runout_helper.note_filament_present(True)
+            
+    def cmd_SET_FILAMENT_NUM_ZERO(self, eventtime=None):
+        self.filament_len = 0
+    def cmd_GET_FILAMENT_NUM(self, eventtime=None):
+        mea_flow = self.filament_len/150
+        if mea_flow > 0.4 and mea_flow < 2.4:
+            gcode = self.printer.lookup_object('gcode') #flsun add
+            gcode.run_script_from_command('M117 flow rate is %f%%' % (mea_flow*100))
+        return self.filament_len
 def load_config_prefix(config):
     return EncoderSensor(config)

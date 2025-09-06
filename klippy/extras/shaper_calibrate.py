@@ -3,7 +3,7 @@
 # Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import collections, importlib, logging, math, multiprocessing, traceback
+import collections, importlib, logging, math, multiprocessing, traceback,os
 shaper_defs = importlib.import_module('.shaper_defs', 'extras')
 
 MIN_FREQ = 5.
@@ -13,7 +13,7 @@ MAX_SHAPER_FREQ = 150.
 
 TEST_DAMPING_RATIOS=[0.075, 0.1, 0.15]
 
-AUTOTUNE_SHAPERS = ['zv', 'mzv', 'ei', '2hump_ei', '3hump_ei']
+AUTOTUNE_SHAPERS = ['zv', 'mzv', 'ei']
 
 ######################################################################
 # Frequency response calculation and shaper auto-tuning
@@ -236,6 +236,12 @@ class ShaperCalibrate:
         psd = calibration_data.psd_sum[freq_bins <= MAX_FREQ]
         freq_bins = freq_bins[freq_bins <= MAX_FREQ]
 
+        max_psd = max(psd)
+        num_freqs = freq_bins.shape[0]
+        for i in range(num_freqs):
+            if psd[i] == max_psd:
+                frequency = freq_bins[i]
+                break
         best_res = None
         results = []
         for test_freq in test_freqs[::-1]:
@@ -265,16 +271,10 @@ class ShaperCalibrate:
                         name=shaper_cfg.name, freq=test_freq, vals=shaper_vals,
                         vibrs=shaper_vibrations, smoothing=shaper_smoothing,
                         score=shaper_score, max_accel=max_accel))
-            if best_res is None or best_res.vibrs > results[-1].vibrs:
+            if best_res is None or (abs(best_res.freq - frequency) > abs(results[-1].freq -frequency)):
                 # The current frequency is better for the shaper.
                 best_res = results[-1]
-        # Try to find an 'optimal' shapper configuration: the one that is not
-        # much worse than the 'best' one, but gives much less smoothing
-        selected = best_res
-        for res in results[::-1]:
-            if res.vibrs < best_res.vibrs * 1.1 and res.score < selected.score:
-                selected = res
-        return selected
+        return best_res
 
     def _bisect(self, func):
         left = right = 1.
@@ -326,6 +326,7 @@ class ShaperCalibrate:
         return best_shaper, all_shapers
 
     def save_params(self, configfile, axis, shaper_name, shaper_freq):
+        shaper_name = 'zero_zv'
         if axis == 'xy':
             self.save_params(configfile, 'x', shaper_name, shaper_freq)
             self.save_params(configfile, 'y', shaper_name, shaper_freq)
@@ -333,6 +334,19 @@ class ShaperCalibrate:
             configfile.set('input_shaper', 'shaper_type_'+axis, shaper_name)
             configfile.set('input_shaper', 'shaper_freq_'+axis,
                            '%.1f' % (shaper_freq,))
+
+    def apply_params(self, input_shaper, axis, shaper_name, shaper_freq):
+        shaper_name = 'zero_zv'
+        if axis == 'xy':
+            self.apply_params(input_shaper, 'x', shaper_name, shaper_freq)
+            self.apply_params(input_shaper, 'y', shaper_name, shaper_freq)
+            return
+        gcode = self.printer.lookup_object("gcode")
+        axis = axis.upper()
+        input_shaper.cmd_SET_INPUT_SHAPER(gcode.create_gcode_command(
+                "SET_INPUT_SHAPER", "SET_INPUT_SHAPER", {
+                    "SHAPER_TYPE_" + axis: shaper_name,
+                    "SHAPER_FREQ_" + axis: shaper_freq}))
 
     def save_calibration_data(self, output, calibration_data, shapers=None):
         try:

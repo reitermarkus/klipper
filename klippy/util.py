@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, pty, fcntl, termios, signal, logging, json, time
-import subprocess, traceback, shlex
+import subprocess, traceback, shlex,configparser
 
 
 ######################################################################
@@ -142,7 +142,7 @@ def get_git_version(from_file=True):
             '--tags', '--long', '--dirty')
     try:
         process = subprocess.Popen(prog, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE)
+                                   stderr=subprocess.PIPE,preexec_fn=set_cpu_affinity)
         ver, err = process.communicate()
         retcode = process.wait()
         if retcode == 0:
@@ -155,3 +155,33 @@ def get_git_version(from_file=True):
     if from_file:
         return get_version_from_file(klippy_src)
     return "?"
+
+def get_flsun_version():
+    varfile = configparser.ConfigParser()
+    try:
+        varfile.read("/home/pi/qt/out_linux/Config/SysSetting.ini")
+        return varfile.get('Setting', 'version')
+    except:
+        return "?"
+
+#设置子进程的CPU亲和性
+def set_cpu_affinity():
+    pid = os.getpid()
+    logging.info(f"Subprocess PID: {pid}")
+
+    new_affinity = {0,2,3}
+    os.sched_setaffinity(pid, new_affinity)
+
+    new_affinity_set = os.sched_getaffinity(pid)
+    logging.debug(f"New CPU affinity: {new_affinity_set}")
+
+# 启动子进程
+def start_subprocess(command, shell=False):
+    if command is not None:
+        logging.debug("start subprocess on other cores:%s"%command)
+        if shell:
+            subprocess.Popen(command, shell=True,stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
+                             stderr=subprocess.PIPE, preexec_fn=set_cpu_affinity)
+        else:
+            subprocess.Popen(command,stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
+                             stderr=subprocess.PIPE, preexec_fn=set_cpu_affinity)

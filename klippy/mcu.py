@@ -706,8 +706,10 @@ class MCU:
             raise error("MCU '%s' error during config: %s" % (
                 self._name, self._shutdown_msg))
         if config_params['is_shutdown']:
-            raise error("Can not update MCU '%s' config as it is shutdown" % (
-                self._name,))
+            gcode =  self._printer.lookup_object('gcode')
+            gcode.request_restart('firmware_restart')
+            #raise error("Can not update MCU '%s' config as it is shutdown" % (
+            #    self._name,))
         return config_params
     def _log_info(self):
         msgparser = self._serial.get_msgparser()
