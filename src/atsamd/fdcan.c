@@ -1,11 +1,12 @@
 // CANbus support on atsame51 chips
 //
-// Copyright (C) 2021-2022  Kevin O'Connor <kevin@koconnor.net>
+// Copyright (C) 2021-2025  Kevin O'Connor <kevin@koconnor.net>
 // Copyright (C) 2019 Eug Krashtan <eug.krashtan@gmail.com>
 // Copyright (C) 2020 Pontus Borg <glpontus@gmail.com>
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include "board/irq.h" // irq_save
 #include "command.h" // DECL_CONSTANT_STR
 #include "generic/armcm_boot.h" // armcm_enable_irq
 #include "generic/canbus.h" // canbus_notify_tx
@@ -28,6 +29,11 @@
  #define GPIO_Rx GPIO('A', 25)
  #define GPIO_Tx GPIO('A', 24)
  #define CANx_GCLK_ID CAN0_GCLK_ID
+#elif CONFIG_ATSAMD_CANBUS_PB11_PB10
+ DECL_CONSTANT_STR("RESERVE_PINS_CAN", "PB11,PB10");
+ #define GPIO_Rx GPIO('B', 11)
+ #define GPIO_Tx GPIO('B', 10)
+ #define CANx_GCLK_ID CAN1_GCLK_ID
 #elif CONFIG_ATSAMD_CANBUS_PB13_PB12
  DECL_CONSTANT_STR("RESERVE_PINS_CAN", "PB13,PB12");
  #define GPIO_Rx GPIO('B', 13)
@@ -40,7 +46,17 @@
  #define CANx_GCLK_ID CAN1_GCLK_ID
 #endif
 
-#if CANx_GCLK_ID == CAN0_GCLK_ID
+#if CANx_GCLK_ID == CAN0_GCLK_ID && CONFIG_MACH_SAMC21
+ #define CAN_FUNCTION 'G'
+ #define CANx CAN0
+ #define CANx_IRQn CAN0_IRQn
+ #define MCLK_AHBMASK_CANx MCLK_AHBMASK_CAN0
+#elif CANx_GCLK_ID == CAN1_GCLK_ID && CONFIG_MACH_SAMC21
+ #define CAN_FUNCTION 'G'
+ #define CANx CAN1
+ #define CANx_IRQn CAN1_IRQn
+ #define MCLK_AHBMASK_CANx MCLK_AHBMASK_CAN1
+#elif CANx_GCLK_ID == CAN0_GCLK_ID
  #define CAN_FUNCTION 'I'
  #define CANx CAN0
  #define CANx_IRQn CAN0_IRQn
@@ -85,7 +101,7 @@ static struct fdcan_msg_ram MSG_RAM;
 
 // Transmit a packet
 int
-canbus_send(struct canbus_msg *msg)
+canhw_send(struct canbus_msg *msg)
 {
     uint32_t txfqs = CANx->TXFQS.reg;
     if (txfqs & CAN_TXFQS_TFQF)
@@ -104,7 +120,8 @@ canbus_send(struct canbus_msg *msg)
     txfifo->dlc_section = (msg->dlc & 0x0f) << 16;
     txfifo->data[0] = msg->data32[0];
     txfifo->data[1] = msg->data32[1];
-    barrier();
+    __DMB();
+    CANx->TXBAR.reg;
     CANx->TXBAR.reg = ((uint32_t)1 << w_index);
     return CANMSG_DATA_LEN(msg);
 }
@@ -120,7 +137,7 @@ can_filter(uint32_t index, uint32_t id)
 
 // Setup the receive packet filter
 void
-canbus_set_filter(uint32_t id)
+canhw_set_filter(uint32_t id)
 {
     if (!CONFIG_CANBUS_FILTER)
         return;
@@ -145,6 +162,38 @@ canbus_set_filter(uint32_t id)
     barrier();
     CANx->CCCR.reg &= ~CAN_CCCR_CCE;
     CANx->CCCR.reg &= ~CAN_CCCR_INIT;
+}
+
+static struct {
+    uint32_t rx_error, tx_error;
+} CAN_Errors;
+
+// Report interface status
+void
+canhw_get_status(struct canbus_status *status)
+{
+    irqstatus_t flag = irq_save();
+    uint32_t psr = CANx->PSR.reg, lec = psr & CAN_PSR_LEC_Msk;
+    if (lec && lec != 7) {
+        // Reading PSR clears it - so update state here
+        if (lec >= 3 && lec <= 5)
+            CAN_Errors.tx_error += 1;
+        else
+            CAN_Errors.rx_error += 1;
+    }
+    uint32_t rx_error = CAN_Errors.rx_error, tx_error = CAN_Errors.tx_error;
+    irq_restore(flag);
+
+    status->rx_error = rx_error;
+    status->tx_error = tx_error;
+    if (psr & CAN_PSR_BO)
+        status->bus_state = CANBUS_STATE_OFF;
+    else if (psr & CAN_PSR_EP)
+        status->bus_state = CANBUS_STATE_PASSIVE;
+    else if (psr & CAN_PSR_EW)
+        status->bus_state = CANBUS_STATE_WARN;
+    else
+        status->bus_state = 0;
 }
 
 // This function handles CAN global interrupts
@@ -182,6 +231,18 @@ CAN_IRQHandler(void)
         // Tx
         CANx->IR.reg = FDCAN_IE_TC;
         canbus_notify_tx();
+    }
+    if (ir & (CAN_IR_PED | CAN_IR_PEA)) {
+        // Bus error
+        uint32_t psr = CANx->PSR.reg;
+        CANx->IR.reg = CAN_IR_PED | CAN_IR_PEA;
+        uint32_t lec = psr & CAN_PSR_LEC_Msk;
+        if (lec && lec != 7) {
+            if (lec >= 3 && lec <= 5)
+                CAN_Errors.tx_error += 1;
+            else
+                CAN_Errors.rx_error += 1;
+        }
     }
 }
 
@@ -234,13 +295,18 @@ compute_btr(uint32_t pclock, uint32_t bitrate)
 void
 can_init(void)
 {
+#if CONFIG_HAVE_SAMD_USB
     if (!CONFIG_USB) {
         // The FDCAN peripheral only seems to run if at least one
         // other peripheral is also enabled.
         enable_pclock(USB_GCLK_ID, ID_USB);
         USB->DEVICE.CTRLA.reg = USB_CTRLA_ENABLE;
     }
+#endif
 
+#if CONFIG_MACH_SAMC21
+    MCLK->AHBMASK.reg |= MCLK_AHBMASK_CANx;
+#endif
     enable_pclock(CANx_GCLK_ID, -1);
 
     gpio_peripheral(GPIO_Rx, CAN_FUNCTION, 1);
@@ -283,11 +349,11 @@ can_init(void)
     CANx->CCCR.reg &= ~CAN_CCCR_INIT;
 
     /*##-2- Configure the CAN Filter #######################################*/
-    canbus_set_filter(0);
+    canhw_set_filter(0);
 
     /*##-3- Configure Interrupts #################################*/
     armcm_enable_irq(CAN_IRQHandler, CANx_IRQn, 1);
     CANx->ILE.reg = CAN_ILE_EINT0;
-    CANx->IE.reg = CAN_IE_RF0NE | FDCAN_IE_TC;
+    CANx->IE.reg = CAN_IE_RF0NE | FDCAN_IE_TC | CAN_IE_PEDE | CAN_IE_PEAE;
 }
 DECL_INIT(can_init);

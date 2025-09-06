@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # Encodes STM32 firmwares to be flashable from SD card by Chitu motherboards.
 # Relocate firmware to 0x08008800!
 
@@ -76,7 +76,7 @@ def encode_file(input, output_file, file_length):
 
     xor_crc = 0xef3d4323;
 
-    # the input file is exepcted to be in chunks of 0x800
+    # the input file is expected to be in chunks of 0x800
     # so round the size
     while len(input_file) % block_size != 0:
         input_file.extend(b'0x0')

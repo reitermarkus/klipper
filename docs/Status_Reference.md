@@ -31,13 +31,34 @@ The following information is available in the
 ## bed_screws
 
 The following information is available in the
-`Config_Reference.md#bed_screws` object:
+[bed_screws](Config_Reference.md#bed_screws) object:
 - `is_active`: Returns True if the bed screws adjustment tool is currently
 active.
 - `state`: The bed screws adjustment tool state. It is one of
 the following strings: "adjust", "fine".
 - `current_screw`: The index for the current screw being adjusted.
 - `accepted_screws`: The number of accepted screws.
+
+## canbus_stats
+
+The following information is available in the `canbus_stats
+some_mcu_name` object (this object is automatically available if an
+mcu is configured to use canbus):
+- `rx_error`: The number of receive errors detected by the
+  micro-controller canbus hardware.
+- `tx_error`: The number of transmit errors detected by the
+  micro-controller canbus hardware.
+- `tx_retries`: The number of transmit attempts that were retried due
+  to bus contention or errors.
+- `bus_state`: The status of the interface (typically "active" for a
+  bus in normal operation, "warn" for a bus with recent errors,
+  "passive" for a bus that will no longer transmit canbus error
+  frames, or "off" for a bus that will no longer transmit or receive
+  messages).
+
+Note that only the rp2XXX micro-controllers report a non-zero
+`tx_retries` field and the rp2XXX micro-controllers always report
+`tx_error` as zero and `bus_state` as "active".
 
 ## configfile
 
@@ -126,6 +147,9 @@ The following information is available for extruder_stepper objects (as well as
 [extruder](Config_Reference.md#extruder) objects):
 - `pressure_advance`: The current [pressure advance](Pressure_Advance.md) value.
 - `smooth_time`: The current pressure advance smooth time.
+- `motion_queue`: The name of the extruder that this extruder stepper is
+  currently synchronized to.  This is reported as `None` if the extruder stepper
+  is not currently associated with an extruder.
 
 ## fan
 
@@ -164,6 +188,18 @@ The following information is available in the
   `unretract_speed`: The current settings for the firmware_retraction
   module. These settings may differ from the config file if a
   `SET_RETRACTION` command alters them.
+
+## gcode
+
+The following information is available in the `gcode` object:
+- `commands`: Returns a list of all currently available commands. For each
+  command, if a help string is defined it will also be provided.
+
+## gcode_button
+
+The following information is available in
+[gcode_button some_name](Config_Reference.md#gcode_button) objects:
+- `state`: The current button state returned as "PRESSED" or "RELEASED"
 
 ## gcode_macro
 
@@ -206,6 +242,8 @@ The following information is available in the `gcode_move` object
 The following information is available in the
 [hall_filament_width_sensor](Config_Reference.md#hall_filament_width_sensor)
 object:
+- all items from
+  [filament_switch_sensor](Status_Reference.md#filament_switch_sensor)
 - `is_active`: Returns True if the sensor is currently active.
 - `Diameter`: The last reading from the sensor in mm.
 - `Raw`: The last raw ADC reading from the sensor.
@@ -236,6 +274,11 @@ object is available if any heater is defined):
   temperature sensors by their full config section names,
   e.g. `["extruder", "heater_bed", "heater_generic my_custom_heater",
   "temperature_sensor electronics_temp"]`.
+- `available_monitors`: Returns a list of all currently available
+  temperature monitors by their full config section names,
+  e.g. `["tmc2240 stepper_x"]`.  While a temperature sensor is always
+  available to read, a temperature monitor may not be available and
+  will return null in such case.
 
 ## idle_timeout
 
@@ -248,6 +291,9 @@ is always available):
 - `printing_time`: The amount of time (in seconds) the printer has
   been in the "Printing" state (as tracked by the idle_timeout
   module).
+- `idle_timeout`: The current 'timeout' (in seconds)
+   to wait for the gcode to be triggered.
+   (as set by [SET_IDLE_TIMEOUT](G-Codes.md#set_idle_timeout))
 
 ## led
 
@@ -257,10 +303,30 @@ The following information is available for each `[led led_name]`,
 - `color_data`: A list of color lists containing the RGBW values for a
   led in the chain. Each value is represented as a float from 0.0 to
   1.0. Each color list contains 4 items (red, green, blue, white) even
-  if the underyling LED supports fewer color channels. For example,
+  if the underlying LED supports fewer color channels. For example,
   the blue value (3rd item in color list) of the second neopixel in a
   chain could be accessed at
   `printer["neopixel <config_name>"].color_data[1][2]`.
+
+## load_cell
+
+The following information is available for each `[load_cell name]`:
+- 'is_calibrated': True/False is the load cell calibrated
+- 'counts_per_gram': The number of raw sensor counts that equals 1 gram of force
+- 'reference_tare_counts': The reference number of raw sensor counts for 0 force
+- 'tare_counts': The current number of raw sensor counts for 0 force
+- 'force_g': The force in grams, averaged over the last polling period.
+- 'min_force_g': The minimum force in grams, over the last polling period.
+- 'max_force_g': The maximum force in grams, over the last polling period.
+
+## load_cell_probe
+
+The following information is available for `[load_cell_probe]`:
+- all items from [load_cell](Status_Reference.md#load_cell)
+- all items from [probe](Status_Reference.md#probe)
+- 'endstop_tare_counts': the load cell probe keeps a tare value independent of
+the load cell. This re-set at the start of each probe.
+- 'last_trigger_time': timestamp of the last homing trigger
 
 ## manual_probe
 
@@ -304,7 +370,8 @@ is defined):
 ## output_pin
 
 The following information is available in
-[output_pin some_name](Config_Reference.md#output_pin) objects:
+[output_pin some_name](Config_Reference.md#output_pin) and
+[pwm_tool some_name](Config_Reference.md#pwm_tool) objects:
 - `value`: The "value" of the pin, as set by a `SET_PIN` command.
 
 ## palette2
@@ -343,6 +410,7 @@ The following information is available in the
 [probe](Config_Reference.md#probe) object (this object is also
 available if a [bltouch](Config_Reference.md#bltouch) config section
 is defined):
+- `name`: Returns the name of the probe in use.
 - `last_query`: Returns True if the probe was reported as "triggered"
   during the last QUERY_PROBE command. Note, if this is used in a
   macro, due to the order of template expansion, the QUERY_PROBE
@@ -351,6 +419,13 @@ is defined):
   command. Note, if this is used in a macro, due to the order of
   template expansion, the PROBE (or similar) command must be run prior
   to the macro containing this reference.
+
+## pwm_cycle_time
+
+The following information is available in
+[pwm_cycle_time some_name](Config_Reference.md#pwm_cycle_time)
+objects:
+- `value`: The "value" of the pin, as set by a `SET_PIN` command.
 
 ## quad_gantry_level
 
@@ -369,12 +444,45 @@ The following information is available in the `query_endstops` object
   the QUERY_ENDSTOP command must be run prior to the macro containing
   this reference.
 
+## screws_tilt_adjust
+
+The following information is available in the `screws_tilt_adjust`
+object:
+- `error`: Returns True if the most recent `SCREWS_TILT_CALCULATE`
+  command included the `MAX_DEVIATION` parameter and any of the probed
+  screw points exceeded the specified `MAX_DEVIATION`.
+- `max_deviation`: Return the last `MAX_DEVIATION` value of the most
+  recent `SCREWS_TILT_CALCULATE` command.
+- `results["<screw>"]`: A dictionary containing the following keys:
+  - `z`: The measured Z height of the screw location.
+  - `sign`: A string specifying the direction to turn to screw for the
+    necessary adjustment. Either "CW" for clockwise or "CCW" for
+    counterclockwise.
+  - `adjust`: The number of screw turns to adjust the screw, given in
+    the format "HH:MM," where "HH" is the number of full screw turns
+    and "MM" is the number of "minutes of a clock face" representing
+    a partial screw turn. (E.g. "01:15" would mean to turn the screw
+    one and a quarter revolutions.)
+  - `is_base`: Returns True if this is the base screw.
+
 ## servo
 
 The following information is available in
 [servo some_name](Config_Reference.md#servo) objects:
 - `printer["servo <config_name>"].value`: The last setting of the PWM
   pin (a value between 0.0 and 1.0) associated with the servo.
+
+## skew_correction.py
+
+The following information is available in the `skew_correction` object (this
+object is available if any skew_correction is defined):
+- `current_profile_name`: Returns the name of the currently loaded SKEW_PROFILE.
+
+## stepper_enable
+
+The following information is available in the `stepper_enable` object (this
+object is available if any stepper is defined):
+- `steppers["<stepper>"]`: Returns True if the given stepper is enabled.
 
 ## system_stats
 
@@ -389,13 +497,15 @@ The following information is available in
 
 [bme280 config_section_name](Config_Reference.md#bmp280bme280bme680-temperature-sensor),
 [htu21d config_section_name](Config_Reference.md#htu21d-sensor),
+[sht3x config_section_name](Config_Reference.md#sht31-sensor),
 [lm75 config_section_name](Config_Reference.md#lm75-temperature-sensor),
-and
 [temperature_host config_section_name](Config_Reference.md#host-temperature-sensor)
+and
+[temperature_combined config_section_name](Config_Reference.md#combined-temperature-sensor)
 objects:
 - `temperature`: The last read temperature from the sensor.
 - `humidity`, `pressure`, `gas`: The last read values from the sensor
-  (only on bme280, htu21d, and lm75 sensors).
+  (only on bme280, htu21d, sht3x and lm75 sensors).
 
 ## temperature_fan
 
@@ -429,6 +539,9 @@ objects (eg, `[tmc2208 stepper_x]`):
 - `drv_status`: The results of the last driver status query. (Only
   non-zero fields are reported.) This field will be null if the driver
   is not enabled (and thus is not periodically queried).
+- `temperature`: The internal temperature reported by the driver. This
+  field will be null if the driver is not enabled or if the driver
+  does not support temperature reporting.
 - `run_current`: The currently set run current.
 - `hold_current`: The currently set hold current.
 
@@ -451,7 +564,7 @@ The following information is available in the `toolhead` object
   limit value (eg, `axis_minimum.x`, `axis_maximum.z`).
 - For Delta printers the `cone_start_z` is the max z height at
   maximum radius (`printer.toolhead.cone_start_z`).
-- `max_velocity`, `max_accel`, `max_accel_to_decel`,
+- `max_velocity`, `max_accel`, `minimum_cruise_ratio`,
   `square_corner_velocity`: The current printing limits that are in
   effect. This may differ from the config file settings if a
   `SET_VELOCITY_LIMIT` (or `M204`) command alters them at run-time.
@@ -463,10 +576,17 @@ The following information is available in the `toolhead` object
 
 The following information is available in
 [dual_carriage](Config_Reference.md#dual_carriage)
-on a hybrid_corexy or hybrid_corexz robot
-- `mode`: The current mode. Possible values are: "FULL_CONTROL"
-- `active_carriage`: The current active carriage.
-Possible values are: "CARRIAGE_0", "CARRIAGE_1"
+on a cartesian, hybrid_corexy or hybrid_corexz robot
+- `carriage_0`: The mode of the carriage 0. Possible values are:
+  "INACTIVE" and "PRIMARY".
+- `carriage_1`: The mode of the carriage 1. Possible values are:
+  "INACTIVE", "PRIMARY", "COPY", and "MIRROR".
+
+On a `generic_cartesian` kinematic, the following information is
+available in `dual_carriage`:
+- `carriages["<carriage>"]`: The mode of the carriage `<carriage>`. Possible
+  values are "INACTIVE" and "PRIMARY" for the primary carriage and "INACTIVE",
+  "PRIMARY", "COPY", and "MIRROR" for the dual carriage.
 
 ## virtual_sdcard
 

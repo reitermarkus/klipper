@@ -12,6 +12,8 @@ class SaveVariables:
         self.filename = os.path.expanduser(config.get('filename'))
         self.allVariables = {}
         try:
+            if not os.path.exists(self.filename):
+                open(self.filename, "w").close()
             self.loadVariables()
         except self.printer.command_error as e:
             raise config.error(str(e))
@@ -34,6 +36,8 @@ class SaveVariables:
     cmd_SAVE_VARIABLE_help = "Save arbitrary variables to disk"
     def cmd_SAVE_VARIABLE(self, gcmd):
         varname = gcmd.get('VARIABLE')
+        if (varname.lower() != varname):
+            raise gcmd.error("VARIABLE must not contain upper case")
         value = gcmd.get('VALUE')
         try:
             value = ast.literal_eval(value)

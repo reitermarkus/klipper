@@ -59,9 +59,7 @@ class AxisInputShaper:
         return self.n, self.A, self.T
     def update(self, gcmd):
         self.params.update(gcmd)
-        old_n, old_A, old_T = self.n, self.A, self.T
         self.n, self.A, self.T = self.params.get_shaper()
-        return (old_n, old_A, old_T) != (self.n, self.A, self.T)
     def set_shaper_kinematics(self, sk):
         ffi_main, ffi_lib = chelper.get_ffi()
         success = ffi_lib.input_shaper_set_shaper_params(
@@ -71,10 +69,8 @@ class AxisInputShaper:
             ffi_lib.input_shaper_set_shaper_params(
                     sk, self.axis.encode(), self.n, self.A, self.T)
         return success
-    def get_step_generation_window(self):
-        ffi_main, ffi_lib = chelper.get_ffi()
-        return ffi_lib.input_shaper_get_step_generation_window(self.n,
-                                                               self.A, self.T)
+    def is_enabled(self):
+        return self.n > 0
     def disable_shaping(self):
         if self.saved is None and self.n:
             self.saved = (self.n, self.A, self.T)
@@ -95,10 +91,12 @@ class InputShaper:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.printer.register_event_handler("klippy:connect", self.connect)
+        self.printer.register_event_handler("dual_carriage:update_kinematics",
+                                            self._update_kinematics)
         self.toolhead = None
         self.shapers = [AxisInputShaper('x', config),
                         AxisInputShaper('y', config)]
-        self.stepper_kinematics = []
+        self.input_shaper_stepper_kinematics = []
         self.orig_stepper_kinematics = []
         # Register gcode commands
         gcode = self.printer.lookup_object('gcode')
@@ -109,38 +107,67 @@ class InputShaper:
         return self.shapers
     def connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
-        kin = self.toolhead.get_kinematics()
-        # Lookup stepper kinematics
-        ffi_main, ffi_lib = chelper.get_ffi()
-        steppers = kin.get_steppers()
-        for s in steppers:
-            sk = ffi_main.gc(ffi_lib.input_shaper_alloc(), ffi_lib.free)
-            orig_sk = s.set_stepper_kinematics(sk)
-            res = ffi_lib.input_shaper_set_sk(sk, orig_sk)
-            if res < 0:
-                s.set_stepper_kinematics(orig_sk)
-                continue
-            self.stepper_kinematics.append(sk)
-            self.orig_stepper_kinematics.append(orig_sk)
+        dual_carriage = self.printer.lookup_object('dual_carriage', None)
+        if dual_carriage is not None:
+            for shaper in self.shapers:
+                if shaper.is_enabled():
+                    raise self.printer.config_error(
+                            'Input shaper parameters cannot be configured via'
+                            ' [input_shaper] section with dual_carriage(s) '
+                            ' enabled. Refer to Klipper documentation on how '
+                            ' to configure input shaper for dual_carriage(s).')
+            return
         # Configure initial values
-        self.old_delay = 0.
         self._update_input_shaping(error=self.printer.config_error)
+    def _get_input_shaper_stepper_kinematics(self, stepper):
+        # Lookup stepper kinematics
+        sk = stepper.get_stepper_kinematics()
+        if sk in self.input_shaper_stepper_kinematics:
+            return sk
+        ffi_main, ffi_lib = chelper.get_ffi()
+        is_sk = ffi_main.gc(ffi_lib.input_shaper_alloc(), ffi_lib.free)
+        stepper.set_stepper_kinematics(is_sk)
+        res = ffi_lib.input_shaper_set_sk(is_sk, sk)
+        if res < 0:
+            stepper.set_stepper_kinematics(sk)
+            return None
+        self.orig_stepper_kinematics.append(sk)
+        self.input_shaper_stepper_kinematics.append(is_sk)
+        return is_sk
+    def _update_kinematics(self):
+        if self.toolhead is None:
+            # Klipper initialization is not yet completed
+            return
+        ffi_main, ffi_lib = chelper.get_ffi()
+        kin = self.toolhead.get_kinematics()
+        for s in kin.get_steppers():
+            if s.get_trapq() is None:
+                continue
+            is_sk = self._get_input_shaper_stepper_kinematics(s)
+            if is_sk is None:
+                continue
+            self.toolhead.flush_step_generation()
+            ffi_lib.input_shaper_update_sk(is_sk)
     def _update_input_shaping(self, error=None):
         self.toolhead.flush_step_generation()
-        new_delay = max([s.get_step_generation_window() for s in self.shapers])
-        self.toolhead.note_step_generation_scan_time(new_delay,
-                                                     old_delay=self.old_delay)
-        failed = []
-        for sk in self.stepper_kinematics:
+        ffi_main, ffi_lib = chelper.get_ffi()
+        kin = self.toolhead.get_kinematics()
+        failed_shapers = []
+        for s in kin.get_steppers():
+            if s.get_trapq() is None:
+                continue
+            is_sk = self._get_input_shaper_stepper_kinematics(s)
+            if is_sk is None:
+                continue
             for shaper in self.shapers:
-                if shaper in failed:
+                if shaper in failed_shapers:
                     continue
-                if not shaper.set_shaper_kinematics(sk):
-                    failed.append(shaper)
-        if failed:
+                if not shaper.set_shaper_kinematics(is_sk):
+                    failed_shapers.append(shaper)
+        if failed_shapers:
             error = error or self.printer.command_error
             raise error("Failed to configure shaper(s) %s with given parameters"
-                        % (', '.join([s.get_name() for s in failed])))
+                        % (', '.join([s.get_name() for s in failed_shapers])))
     def disable_shaping(self):
         for shaper in self.shapers:
             shaper.disable_shaping()
@@ -151,10 +178,9 @@ class InputShaper:
         self._update_input_shaping()
     cmd_SET_INPUT_SHAPER_help = "Set cartesian parameters for input shaper"
     def cmd_SET_INPUT_SHAPER(self, gcmd):
-        updated = False
-        for shaper in self.shapers:
-            updated |= shaper.update(gcmd)
-        if updated:
+        if gcmd.get_command_parameters():
+            for shaper in self.shapers:
+                shaper.update(gcmd)
             self._update_input_shaping()
         for shaper in self.shapers:
             shaper.report(gcmd)
