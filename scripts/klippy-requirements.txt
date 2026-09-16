@@ -19,3 +19,7 @@ python-can==3.3.4
 setuptools==78.1.1 ; python_version >= '3.12' # Needed by python-can
 # msgspec is an optional dependency of webhooks.py
 msgspec==0.19.0 ; python_version >= '3.9'
+# Start FLSUN Changes
+numpy==1.16.2  ; python_version < '3.9'
+numpy ; python_version >= '3.9'
+# End FLSUN Changes

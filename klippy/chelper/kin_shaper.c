@@ -24,7 +24,9 @@ struct shaper_pulses {
     int num_pulses;
     struct {
         double t, a;
-    } pulses[5];
+    // Start FLSUN Changes
+    } pulses[200];
+    // End FLSUN Changes
 };
 
 // Shift pulses around 'mid-point' t=0 so that the input shaper is an identity

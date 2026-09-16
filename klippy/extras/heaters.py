@@ -153,8 +153,20 @@ class Heater:
     cmd_SET_HEATER_TEMPERATURE_help = "Sets a heater temperature"
     def cmd_SET_HEATER_TEMPERATURE(self, gcmd):
         temp = gcmd.get_float('TARGET', 0.)
+        # Start FLSUN Changes
+        wait = gcmd.get_float('WAIT', 0)
+        if ("extruder" in self.short_name):
+            gcode = self.printer.lookup_object('gcode')
+            if(temp > 0.5):
+                gcode.run_script_from_command("_RELAY_ON")
+        # End FLSUN Changes
         pheaters = self.printer.lookup_object('heaters')
-        pheaters.set_temperature(self, temp)
+        # Start FLSUN Changes
+        if (wait==1):
+            pheaters.set_temperature(self, temp, True)
+        else:
+            pheaters.set_temperature(self, temp, False)
+        # End FLSUN Changes
 
 
 ######################################################################
@@ -184,7 +196,9 @@ class ControlBangBang:
 # Proportional Integral Derivative (PID) control algo
 ######################################################################
 
-PID_SETTLE_DELTA = 1.
+# Start FLSUN Changes
+PID_SETTLE_DELTA = 3.
+# End FLSUN Changes
 PID_SETTLE_SLOPE = .1
 
 class ControlPID:
@@ -229,8 +243,9 @@ class ControlPID:
             self.prev_temp_integ = temp_integ
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         temp_diff = target_temp - smoothed_temp
-        return (abs(temp_diff) > PID_SETTLE_DELTA
-                or abs(self.prev_temp_deriv) > PID_SETTLE_SLOPE)
+        # Start FLSUN Changes
+        return (abs(temp_diff) > PID_SETTLE_DELTA)
+        # End FLSUN Changes
 
 
 ######################################################################
