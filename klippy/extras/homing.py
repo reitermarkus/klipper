@@ -168,7 +168,6 @@ class Homing:
         self.changed_axes = []
         self.trigger_mcu_pos = {}
         self.adjust_pos = {}
-        self.set_home_speed_flag = False # FLSUN Changes
     def set_axes(self, axes):
         self.changed_axes = axes
     def get_axes(self):
@@ -186,11 +185,6 @@ class Homing:
         return thcoord
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
-    # Start FLSUN Changes
-    def set_home_speed(self, my_home_speed):
-        self.set_home_speed_flag = True
-        self.my_home_speed = my_home_speed
-    # End FLSUN Changes
     def _set_start_position(self, forcepos):
         homing_axes = "".join(["xyz"[axis] for axis in range(3)
                                if forcepos[axis] is not None])
@@ -221,12 +215,7 @@ class Homing:
         endstops = [es for rail in rails for es in rail.get_endstops()]
         homing_info = rails[0].get_homing_info()
         hmove = HomingMove(self.printer, endstops)
-        # Start FLSUN Changes
-        if self.set_home_speed_flag:
-            hmove.homing_move(homepos, self.my_home_speed)
-        else:
-            hmove.homing_move(homepos, homing_info.speed)
-        # End FLSUN Changes
+        hmove.homing_move(homepos, homing_info.speed)
         # Perform second home
         if homing_info.retract_dist:
             homepos = self._retract_move(homing_info, forcepos, movepos)
