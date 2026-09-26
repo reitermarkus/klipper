@@ -20,10 +20,12 @@ class PrinterSensorGeneric:
         self.sensor.setup_callback(self.temperature_callback)
         pheaters.register_sensor(config, self)
         self.last_temp = 0.
+        self.last_humidity = 0.
         self.measured_min = 99999999.
         self.measured_max = 0.
-    def temperature_callback(self, read_time, temp):
+    def temperature_callback(self, read_time, temp, humidity=None):
         self.last_temp = temp
+        self.last_humidity = humidity
         if temp:
             self.measured_min = min(self.measured_min, temp)
             self.measured_max = max(self.measured_max, temp)
@@ -32,11 +34,16 @@ class PrinterSensorGeneric:
     def stats(self, eventtime):
         return False, '%s: temp=%.1f' % (self.name, self.last_temp)
     def get_status(self, eventtime):
-        return {
+        data = {
             'temperature': round(self.last_temp, 2),
             'measured_min_temp': round(self.measured_min, 2),
             'measured_max_temp': round(self.measured_max, 2)
         }
+
+        if self.last_humidity is not None:
+          data['humidity'] = self.last_humidity
+
+        return data
 
 def load_config_prefix(config):
     return PrinterSensorGeneric(config)

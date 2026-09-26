@@ -82,7 +82,7 @@ class Temperature_HOST:
 
         mcu = self.printer.lookup_object('mcu')
         measured_time = self.reactor.monotonic()
-        self._callback(mcu.estimated_print_time(measured_time), self.temp)
+        self._callback(mcu.estimated_print_time(measured_time), self.temp, self.humidity)
         return measured_time + HOST_REPORT_TIME
 
     def get_status(self, eventtime):
