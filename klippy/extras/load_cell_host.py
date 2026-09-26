@@ -47,8 +47,8 @@ class LoadCell_HOST:
 
     def _sample_load_cell(self, eventtime):
         def _get_sample():
-          with open(self.path, "r") as f:
-            return f.read()
+            with open(self.path, "r") as f:
+                return f.read()
 
         measured_time = self.reactor.monotonic()
 

@@ -15,8 +15,10 @@ class Temperature_HOST:
         self.reactor = self.printer.get_reactor()
         self.name = config.get_name().split()[-1]
         self.path = config.get("sensor_path", RPI_PROC_TEMP_FILE)
+        self.path_humidity = config.get("sensor_path_humidity", default=None)
 
         self.temp = self.min_temp = self.max_temp = 0.0
+        self.humidity = None
 
         self.printer.add_object("temperature_host " + self.name, self)
         if self.printer.get_start_args().get('debugoutput') is not None:
@@ -25,22 +27,12 @@ class Temperature_HOST:
             self._sample_pi_temperature)
         aio = self.printer.load_object(config, 'aio_executor')
         self.executor = aio.allocate_executor("temperature_host")
-        try:
-            self.file_handle = self.executor.submit(open, self.path, "r")
-        except:
-            raise config.error("Unable to open temperature file '%s'"
-                               % (self.path,))
 
         self.printer.register_event_handler("klippy:connect",
                                             self.handle_connect)
-        self.printer.register_event_handler("klippy:disconnect",
-                                            self.handle_disconnect)
 
     def handle_connect(self):
         self.reactor.update_timer(self.sample_timer, self.reactor.NOW)
-
-    def handle_disconnect(self):
-        self.file_handle.close()
 
     def setup_minmax(self, min_temp, max_temp):
         self.min_temp = min_temp
@@ -52,22 +44,32 @@ class Temperature_HOST:
     def get_report_time_delta(self):
         return HOST_REPORT_TIME
 
+    def _sample_humidity(self):
+      if self.path_humidity is None:
+        return self.reactor.NEVER
+
+      def _get_sample():
+          with open(self.path_humidity, "r") as f:
+              return f.read()
+      try:
+          raw_value = self.executor.submit(_get_sample)
+          self.humidity = float(raw_value) / 1000.0
+      except Exception:
+          logging.exception("temperature_host: Error reading data")
+          return self.reactor.monotonic() + HOST_REPORT_TIME
+
     def _sample_pi_temperature(self, eventtime):
+        self._sample_humidity()
+
         def _get_sample():
-            self.file_handle.seek(0)
-            return self.file_handle.read()
+            with open(self.path, "r") as f:
+                return f.read()
         try:
             raw_value = self.executor.submit(_get_sample)
-            self.temp = float(raw_value)/1000.0
+            self.temp = float(raw_value) / 1000.0
         except Exception:
             logging.exception("temperature_host: Error reading data")
-            self.temp = 0.0
-            # Start FLSUN Changes
-            if self.name == "_drying_box_temp":
-                return self.reactor.monotonic() + HOST_REPORT_TIME
-            else:
-                return self.reactor.NEVER
-            # End FLSUN Changes
+            return self.reactor.monotonic() + HOST_REPORT_TIME
 
         if self.temp < self.min_temp:
             self.printer.invoke_shutdown(
@@ -84,9 +86,14 @@ class Temperature_HOST:
         return measured_time + HOST_REPORT_TIME
 
     def get_status(self, eventtime):
-        return {
+        data = {
             'temperature': round(self.temp, 2),
         }
+
+        if self.humidity:
+          data["humidity"] = self.humidity
+
+        return data
 
 
 def load_config(config):
