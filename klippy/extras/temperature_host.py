@@ -55,7 +55,7 @@ class Temperature_HOST:
           raw_value = self.executor.submit(_get_sample)
           self.humidity = float(raw_value) / 1000.0
       except Exception:
-          logging.exception("temperature_host: Error reading data")
+          logging.exception("temperature_host: Error reading humidity data")
           return self.reactor.monotonic() + HOST_REPORT_TIME
 
     def _sample_pi_temperature(self, eventtime):
@@ -68,7 +68,7 @@ class Temperature_HOST:
             raw_value = self.executor.submit(_get_sample)
             self.temp = float(raw_value) / 1000.0
         except Exception:
-            logging.exception("temperature_host: Error reading data")
+            logging.exception("temperature_host: Error reading temperature data")
             return self.reactor.monotonic() + HOST_REPORT_TIME
 
         if self.temp < self.min_temp:
@@ -90,8 +90,8 @@ class Temperature_HOST:
             'temperature': round(self.temp, 2),
         }
 
-        if self.humidity:
-          data["humidity"] = self.humidity
+        if self.humidity is not None:
+          data['humidity'] = self.humidity
 
         return data
 
